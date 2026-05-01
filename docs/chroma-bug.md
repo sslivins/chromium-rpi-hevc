@@ -2,7 +2,7 @@
 
 ## Status: **RESOLVED** (2026-05-01)
 
-Fix lives in `floating-edits/0006-v4l2-utils-nc12-sand128.patch`.
+Fix lives in `patches/0006-v4l2-utils-nc12-sand128.patch`.
 
 The correct chroma plane offset for NC12 in SAND128 layout is
 `pix_mp.height * 128` bytes (the first candidate listed in the

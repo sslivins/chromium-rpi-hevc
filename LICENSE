@@ -6,7 +6,7 @@ This repository contains:
    packaging.** Chromium itself is licensed under a BSD 3-Clause
    license with additional terms for some components. The Raspberry
    Pi packaging in `chromium` is GPL-2 (debian packaging conventions).
-   The patches in `patches/` and `floating-edits/` are intended to be
+   The patches in `patches/` are intended to be
    applied on top of those sources and inherit their respective
    licenses.
 
