@@ -38,27 +38,14 @@ Pi 5:
 | `NC12` fourcc unknown to Chromium | `patches/0002-add-nc12-fourcc.patch` |
 | Stateless realloc on `EBUSY` was missing | `patches/0003-stateless-realloc-on-ebusy.patch` |
 | `NC12` not in renderable list (default fourcc rejected) | `patches/0004-nc12-renderable.patch` |
-| H265 delegate didn't submit `V4L2_CID_STATELESS_HEVC_SLICE_PARAMS` (rpi-hevc-dec is slice-based) and `bit_size` was wrong | `floating-edits/0005-h265-slice-params-and-bitsize.patch` |
-| `V4L2FormatToVideoFrameLayout` couldn't derive NC12 stride / SAND128 modifier missing | `floating-edits/0006-v4l2-utils-nc12-sand128.patch` |
-| `gbm_bo_import()` blocked by overly-strict `GetSupportedGbmFlags()!=0` gate | `floating-edits/0007-gbm-import-gate-fix.patch` |
+| H265 delegate didn't submit `V4L2_CID_STATELESS_HEVC_SLICE_PARAMS` (rpi-hevc-dec is slice-based) and `bit_size` was wrong | `patches/0005-h265-slice-params-and-bitsize.patch` |
+| `V4L2FormatToVideoFrameLayout` couldn't derive NC12 stride / SAND128 modifier missing | `patches/0006-v4l2-utils-nc12-sand128.patch` |
+| `gbm_bo_import()` blocked by overly-strict `GetSupportedGbmFlags()!=0` gate | `patches/0007-gbm-import-gate-fix.patch` |
 
-Patches `0001-0004` are quilt-clean and applied via
-`dpkg-source --before-build` (i.e. they go through `debian/patches`).
-
-The three diffs in `floating-edits/` are raw unified-diffs against
-the in-tree files. They need to be re-formalized as proper quilt
-patches before any clean merge / dpkg ship.
-
-> ⚠️ **The build scripts in `build/` only apply `patches/*.patch`.**
-> The floating edits in `floating-edits/` must be applied **manually**
-> after the source is patched via the helper:
->
-> ```bash
-> ./apply-floating.sh /path/to/work/chromium-147.0.7727.101
-> ```
->
-> If you skip this step, the build will succeed but produce a
-> binary that does **not** decode HEVC.
+All seven patches under `patches/` are quilt-clean and applied via
+`dpkg-source --before-build` (they go through `debian/patches/local-hevc/`).
+The build scripts pick them up automatically — there is no separate
+manual apply step.
 
 ## How to build
 
@@ -87,10 +74,7 @@ docker run --rm \
   -e MAKE_DEB=0 \
   chromium-rpi:trixie /build/build.sh
 
-# 4) Apply floating edits (one-time, after source tree exists)
-./apply-floating.sh "$PWD/work/chromium-147.0.7727.101"
-
-# 5) Fast incremental builds
+# 4) Fast incremental builds
 docker run --rm \
   -v "$PWD/work:/build" \
   -v "$PWD/patches:/patches:ro" \
@@ -154,8 +138,6 @@ scp /tmp/screen.png back-to-host:.
   See `docs/chroma-bug.md` for hypothesis, evidence, and the
   recommended investigation order (read Mesa v3d SAND import code
   before changing anything).
-- Floating edits need quilt formalization before this can be
-  cleanly upstreamed or shipped via dpkg.
 - Tested only at 1920×1080 Main-profile HEVC so far. Other
   resolutions, Main10, tiles/WPP have not been exercised.
 - The Pi binary in this state is **not** safe to ship to end users
@@ -167,7 +149,6 @@ scp /tmp/screen.png back-to-host:.
 chromium-rpi-hevc/
 ├── README.md
 ├── LICENSE
-├── apply-floating.sh           # apply floating-edits/ on top of src
 ├── .gitignore
 ├── build/
 │   ├── Dockerfile
@@ -178,8 +159,7 @@ chromium-rpi-hevc/
 │   ├── 0001-probe-video19-for-hevc.patch
 │   ├── 0002-add-nc12-fourcc.patch
 │   ├── 0003-stateless-realloc-on-ebusy.patch
-│   └── 0004-nc12-renderable.patch
-├── floating-edits/             # NOT auto-applied, run apply-floating.sh
+│   ├── 0004-nc12-renderable.patch
 │   ├── 0005-h265-slice-params-and-bitsize.patch
 │   ├── 0006-v4l2-utils-nc12-sand128.patch
 │   └── 0007-gbm-import-gate-fix.patch
