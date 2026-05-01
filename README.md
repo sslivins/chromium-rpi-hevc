@@ -17,10 +17,24 @@ End-to-end HEVC hardware decode on Raspberry Pi 5 via the upstream
 
 ## Source / version pin
 
-- Upstream package: `chromium 1:147.0.7727.101-1~deb13u1+rpt1`
+- Upstream package version: `chromium 1:147.0.7727.101-1~deb13u1+rpt1`
 - Distribution: Debian Trixie (13) on Raspberry Pi
-- Source obtained via: `apt-get source chromium=1:147.0.7727.101-1~deb13u1+rpt1`
-  inside the `chromium-rpi:trixie` build container
+- Pinned reproducibility recipe (Phase 4):
+  - **Upstream chromium source**: fetched from Google's persistent
+    `commondatastorage.googleapis.com/chromium-browser-official/`
+    bucket, SHA256-verified. Pinned in `build/fetch-upstream.sh`.
+  - **RPi-Distro packaging**: vendored as a git submodule at
+    `vendor/rpi-distro-chromium/`, pinned to tag
+    `pios/1%147.0.7727.101-1_deb13u1+rpt1` on
+    [`RPi-Distro/chromium`](https://github.com/RPi-Distro/chromium).
+  - Our HEVC patches are layered on top via
+    `debian/patches/local-hevc/` (see `patches/`).
+
+Why not `apt-get source chromium`? The Raspberry Pi archive only retains
+the *current* version of chromium. Once RPi-Distro publishes a newer
+build, the source package for our pinned version is evicted and the
+build is no longer reproducible. Vendoring the packaging + pinning the
+upstream tarball at a content-addressed URL solves that.
 
 The upstream `chromium` package already carries ~100 patches from
 the Raspberry Pi packaging team — see
@@ -49,38 +63,45 @@ manual apply step.
 
 ## How to build
 
-Build is performed inside the `chromium-rpi:trixie` Docker image on
-a big VM (32+ GB RAM, fast disk strongly recommended). The first
+Build runs inside a Docker image (`chromium-rpi-build:trixie`) on a big
+arm64 host (32+ GB RAM, fast disk strongly recommended). The first
 build takes 6–10 hours; subsequent builds via `build-fast.sh` are
 ~3–5 min thanks to fingerprint-skip + ccache (50 GB).
 
+The build context for the Dockerfile is the **repo root** (not
+`build/`), so the Dockerfile can `COPY` the vendored RPi-Distro
+packaging into the image.
+
 ```bash
-# 1) Build the build container (one-time)
-docker build -t chromium-rpi:trixie build/
+# 0) Initialize the vendored RPi-Distro packaging submodule.
+git submodule update --init --recursive
 
-# 2) Set up the build root layout. The scripts assume:
-#    $ROOT/work/                       # build state, sources, .ccache
-#    $ROOT/patches/                    # mounted as /patches inside container
-#    $ROOT/out/                        # output binaries
+# 1) Build the build container (one-time, or whenever Dockerfile /
+#    vendored debian/control / fetch-upstream.sh change).
+docker build -f build/Dockerfile -t chromium-rpi-build:trixie .
+
+# 2) Set up persistent state on the host:
+#    out/         — produced .deb files land here
+#    work/        — extracted source tree, ccache, upstream tarball cache
 mkdir -p work out
-cp patches/*.patch /tmp/  # build-fast.sh expects them at /patches inside the container
 
-# 3) First full build (downloads source via apt-get source, applies
-#    patches, gn gen, ninja, packages .deb if MAKE_DEB=1)
+# 3) First full build. Downloads + verifies the upstream chromium tarball
+#    (~5.7 GB) on first run, caches it in work/upstream/. Then extracts,
+#    overlays the vendored RPi-Distro debian/, applies patches/*.patch,
+#    runs ninja + dpkg-buildpackage, and drops .deb files in out/.
 docker run --rm \
   -v "$PWD/work:/build" \
   -v "$PWD/patches:/patches:ro" \
   -v "$PWD/out:/out" \
-  -e MAKE_DEB=0 \
-  chromium-rpi:trixie /build/build.sh
+  chromium-rpi-build:trixie /build.sh
 
-# 4) Fast incremental builds
+# 4) Fast incremental rebuild after patch tweaks (no .deb produced —
+#    drops a raw chromium binary at out/chromium).
 docker run --rm \
   -v "$PWD/work:/build" \
   -v "$PWD/patches:/patches:ro" \
   -v "$PWD/out:/out" \
-  -e MAKE_DEB=0 \
-  chromium-rpi:trixie /build/build-fast.sh
+  chromium-rpi-build:trixie /build-fast.sh
 ```
 
 `build-fast.sh` hashes `/patches/*.patch`, stores a fingerprint, and
@@ -88,11 +109,25 @@ skips the entire `dpkg-source --before-build` reapply if the
 fingerprint matches. ccache absorbs source mtime touches via
 content-hash compile caching.
 
-The output binary is `out/chromium` (~412 MB, stripped, no
-.deb unless `MAKE_DEB=1`).
-
 For reference, the `args.gn` used by `build.sh` is captured at
 `docs/args.gn.reference`.
+
+### Bumping the chromium version
+
+To re-pin against a newer chromium release:
+
+1. Update `CHROMIUM_VERSION` and `EXPECTED_SHA256` in
+   `build/fetch-upstream.sh`. The expected SHA256 is published by
+   Google at the same URL with a `.hashes` suffix.
+2. Update `CHROMIUM_VERSION` in `build/build.sh` (and same in
+   `build/build-incremental.sh`) to match.
+3. Bump the submodule:
+   `git -C vendor/rpi-distro-chromium fetch && git -C vendor/rpi-distro-chromium checkout <new-tag>`.
+   Tags follow the pattern `pios/1%<version>-1_deb13u1+rpt1`.
+4. Rebuild the docker image (`docker build -f build/Dockerfile ...`) so
+   the vendored packaging is re-baked.
+5. Re-run a full build, fix any patch refresh fallout, and cut a new
+   release.
 
 ## How to deploy to a Pi
 
@@ -151,10 +186,13 @@ chromium-rpi-hevc/
 ├── LICENSE
 ├── .gitignore
 ├── build/
-│   ├── Dockerfile
-│   ├── build.sh                # full-build entrypoint
-│   ├── build-fast.sh           # fingerprint-skip incremental
-│   └── build-incremental.sh    # legacy, do not use
+│   ├── Dockerfile              # build context = repo root, not build/
+│   ├── fetch-upstream.sh       # downloads + SHA256-verifies upstream tarball
+│   ├── build.sh                # cold-build entrypoint (assemble + dpkg-buildpackage)
+│   ├── build-incremental.sh    # full-build with incremental detection
+│   └── build-fast.sh           # fingerprint-skip ninja-only iteration loop
+├── vendor/
+│   └── rpi-distro-chromium/    # submodule: pinned RPi-Distro packaging
 ├── patches/                    # quilt-clean, applied by build scripts
 │   ├── 0001-probe-video19-for-hevc.patch
 │   ├── 0002-add-nc12-fourcc.patch

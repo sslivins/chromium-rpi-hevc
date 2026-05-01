@@ -1,0 +1,9 @@
+# Shell scripts must be LF — they run inside Linux containers.
+*.sh text eol=lf
+
+# Patches must be LF — quilt/dpkg-source are Linux-native tools.
+*.patch text eol=lf
+
+# Dockerfiles + build manifests
+Dockerfile text eol=lf
+debian/* text eol=lf

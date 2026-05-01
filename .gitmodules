@@ -1,0 +1,3 @@
+[submodule "vendor/rpi-distro-chromium"]
+	path = vendor/rpi-distro-chromium
+	url = https://github.com/RPi-Distro/chromium.git

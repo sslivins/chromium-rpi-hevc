@@ -3,13 +3,15 @@
 # Smart: detects existing source tree and runs incrementally if so.
 #
 # Inputs:  /patches/*.patch   (added to debian/patches/series under local-hevc/)
+#          /build-tools/rpi-distro-chromium/debian/  (vendored RPi-Distro packaging)
+#          /build-tools/fetch-upstream.sh             (fetches + verifies upstream tarball)
 # Outputs: /out/*.deb
 #
-# First run:    ~2-3 hr (apt source + full ninja build)
+# First run:    ~3-4 hr (download upstream tarball + extract + full ninja build)
 # Incremental:  ~5-15 min (only changed objects relink)
 #
 # Incremental works because:
-#   - apt source dir is preserved on bind-mounted /build/src
+#   - extracted source tree is preserved on bind-mounted /build/src
 #   - We explicitly drive ninja in out/Release rather than relying on dh stamps
 #   - dpkg-buildpackage -nc skips clean and packages whatever ninja produced
 #   - Local patches live under debian/patches/local-hevc/ (subdir) to avoid
@@ -44,19 +46,40 @@ if [ "${#TREES[@]}" -eq 1 ] && [ -f "${TREES[0]}/debian/patches/series" ]; then
 fi
 
 if [ "$INCREMENTAL" = "0" ]; then
-    echo "=== STAGE 0: refresh apt lists ==="
-    apt-get update
-
-    echo "=== STAGE 1: apt source chromium (~3-5GB) ==="
-    apt-get source chromium
-
-    mapfile -t TREES < <(find . -maxdepth 1 -type d -name 'chromium-*' | sort)
-    if [ "${#TREES[@]}" -ne 1 ]; then
-        echo "ERROR: expected exactly one chromium-* tree after apt source, got ${#TREES[@]}:"
-        printf '  %s\n' "${TREES[@]}"
+    echo "=== STAGE 0: vendored RPi-Distro debian/ ==="
+    RPI_DEBIAN=/build-tools/rpi-distro-chromium/debian
+    if [ ! -f "${RPI_DEBIAN}/changelog" ]; then
+        echo "ERROR: ${RPI_DEBIAN}/changelog not found (submodule not baked into image)."
+        echo "       Did you forget 'git submodule update --init' before docker build?"
         exit 1
     fi
-    SRC_TREE="${TREES[0]}"
+    head -1 "${RPI_DEBIAN}/changelog"
+
+    echo "=== STAGE 1: fetch+verify upstream tarball, extract, overlay debian/ ==="
+    # Pinned chromium version — must match build/fetch-upstream.sh.
+    CHROMIUM_VERSION="147.0.7727.101"
+    TARBALL="/build/upstream/chromium-${CHROMIUM_VERSION}.tar.xz"
+    EXPECTED_TREE="${SRC_DIR}/chromium-${CHROMIUM_VERSION}"
+
+    /build-tools/fetch-upstream.sh
+    if [ ! -f "$TARBALL" ]; then
+        echo "ERROR: expected $TARBALL after fetch-upstream.sh"
+        exit 1
+    fi
+
+    if [ ! -d "$EXPECTED_TREE" ]; then
+        echo "Extracting $TARBALL into $SRC_DIR (~5.7 GB unpacked, takes a few minutes)..."
+        tar -xf "$TARBALL" -C "$SRC_DIR"
+        if [ ! -d "$EXPECTED_TREE" ]; then
+            echo "ERROR: tarball did not produce expected directory $EXPECTED_TREE"
+            ls -la "$SRC_DIR"
+            exit 1
+        fi
+        echo "Overlaying RPi-Distro debian/ into source tree..."
+        cp -a "${RPI_DEBIAN}" "${EXPECTED_TREE}/debian"
+    fi
+
+    SRC_TREE="$EXPECTED_TREE"
     echo "Source tree: $SRC_TREE"
 fi
 
