@@ -1,3 +1,14 @@
+Description: NC12 (Pi5 SAND128) plumbing in V4L2FormatToVideoFrameLayout.
+ Adds the BROADCOM_SAND128 modifier so EGL/Mesa knows how to interpret the
+ dmabuf, and computes the correct chroma plane offset for SAND128 layout.
+ .
+ Y and CbCr are stacked WITHIN each 128-byte-wide column. The chroma plane
+ starts at byte (image_height * 128) into the dmabuf, not at (stride * height)
+ (which is past the first column). With this fix, HEVC HW decode renders
+ with correct chroma on Pi 5.
+Author: agora-cms maintainers
+Forwarded: not-needed
+
 --- a/media/gpu/v4l2/v4l2_utils.cc
 +++ b/media/gpu/v4l2/v4l2_utils.cc
 @@ -53,6 +53,10 @@
@@ -21,7 +32,7 @@
  #endif
    const size_t num_buffers = pix_mp.num_planes;
    const size_t num_color_planes = VideoFrame::NumPlanes(video_format);
-@@ -279,6 +286,12 @@
+@@ -279,6 +286,25 @@
      // It is safe to cast to size_t.
      const size_t y_stride_abs = static_cast<size_t>(y_stride);
      switch (pix_fmt) {
@@ -29,7 +40,20 @@
 +#ifndef V4L2_PIX_FMT_NC12
 +#define V4L2_PIX_FMT_NC12 v4l2_fourcc('N', 'C', '1', '2')
 +#endif
-+      case V4L2_PIX_FMT_NC12:
++      case V4L2_PIX_FMT_NC12: {
++        // PATCH_SAND128_CHROMA_OFFSET: NC12 = NV12 in BROADCOM_SAND128
++        // layout. Y and CbCr are stacked WITHIN each 128-byte-wide column;
++        // chroma starts at byte (image_height * 128) into the dmabuf, NOT
++        // at (y_stride * height) which would be past the column boundary.
++        const size_t sand128_chroma_offset =
++            static_cast<size_t>(pix_mp.height) * 128u;
++        const size_t sand128_chroma_size =
++            (static_cast<size_t>(pix_mp.height) / 2u) * 128u;
++        planes.emplace_back(y_stride, sand128_chroma_offset,
++                            sand128_chroma_size);
++        DCHECK_EQ(2u, planes.size());
++        break;
++      }
 +#endif
        case V4L2_PIX_FMT_NV12:
          // The stride of UV is the same as Y in NV12.

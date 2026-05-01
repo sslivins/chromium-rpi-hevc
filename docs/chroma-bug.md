@@ -1,17 +1,38 @@
 # SAND128 chroma offset bug
 
-## Status
+## Status: **RESOLVED** (2026-05-01)
 
-This is the **outstanding bug** as of repo creation. Decode succeeds
-end-to-end (luma is correct, picture is recognizable, motion is
-smooth), but chroma is corrupt.
+Fix lives in `floating-edits/0006-v4l2-utils-nc12-sand128.patch`.
+
+The correct chroma plane offset for NC12 in SAND128 layout is
+`pix_mp.height * 128` bytes (the first candidate listed in the
+investigation order below). With this offset, HEVC HW decode renders
+with correct colors on Pi 5 (Big Buck Bunny test clip - verified
+visually 2026-05-01). See `chroma-bug-fixed-screenshot.png`.
+
+```cpp
+case V4L2_PIX_FMT_NC12: {
+  const size_t sand128_chroma_offset =
+      static_cast<size_t>(pix_mp.height) * 128u;
+  const size_t sand128_chroma_size =
+      (static_cast<size_t>(pix_mp.height) / 2u) * 128u;
+  planes.emplace_back(y_stride, sand128_chroma_offset,
+                      sand128_chroma_size);
+  ...
+}
+```
+
+## Original symptom (kept for posterity)
+
+Decode succeeded end-to-end (luma was correct, picture recognizable,
+motion smooth), but chroma was corrupt.
 
 ## Symptom
 
 Magenta / bright-green vertical banding across the rendered video,
 repeating roughly every 128 px horizontally. See
 `chroma-bug-screenshot.png` (captured via `grim` on Pi 5 running a
-1920×1080 panda HEVC clip).
+1920?1080 panda HEVC clip).
 
 ## Root cause hypothesis
 
@@ -79,17 +100,17 @@ strides=[1620 1620] offsets=[0 1749600] modifier=0x0700000000000004
      `strides[]`, `offsets[]`, `modifier`, and whether one fd or
      two are passed
 4. **Then test offset candidates** in this order:
-   - `pix_mp.height * 128 = 138240` — bytes into a 128-byte-wide
+   - `pix_mp.height * 128 = 138240` ? bytes into a 128-byte-wide
      column where chroma starts (most plausible byte-offset
      candidate)
    - `0` with single-plane import (let Mesa derive both planes
      from the modifier)
-   - `pix_mp.height = 1080` — only if Mesa clearly treats offset as
+   - `pix_mp.height = 1080` ? only if Mesa clearly treats offset as
      row count, not byte offset (probably not)
 
-Each iteration: edit `v4l2_utils.cc` → `build/build-fast.sh`
-(~5 min via fingerprint skip + ccache) → scp to Pi → restart
-`hevc-test` → snapshot.
+Each iteration: edit `v4l2_utils.cc` ? `build/build-fast.sh`
+(~5 min via fingerprint skip + ccache) ? scp to Pi ? restart
+`hevc-test` ? snapshot.
 
 ## Note from rubber-duck review
 
@@ -101,5 +122,6 @@ semantics if Mesa source confirms it.
 
 ## Workaround
 
-None — chroma is corrupt. Luma-only output is not a useful
+None ? chroma is corrupt. Luma-only output is not a useful
 deliverable.
+
