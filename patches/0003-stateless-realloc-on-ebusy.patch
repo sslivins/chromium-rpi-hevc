@@ -1,0 +1,86 @@
+Description: Re-allocate OUTPUT buffers when V4L2 driver rejects S_FMT
+ on the Raspberry Pi 5's rpi-hevc-dec / upstream hantro stateless HEVC
+ driver, VIDIOC_S_FMT on the OUTPUT queue is only accepted when no
+ buffers have been allocated yet.  Chromium's stateless backend
+ allocates OUTPUT buffers up-front (with width/height = 0) and then
+ calls S_FMT again from ApplyResolution() once the SPS is parsed --
+ the second S_FMT is rejected with EBUSY.
+ .
+ On EBUSY (with MMAP memory and all buffers free), deallocate the
+ OUTPUT buffers, refresh the v4l2_format with G_FMT, retry S_FMT,
+ then reallocate at least as many buffers as we had before.  This is
+ a no-op on drivers that already accept S_FMT-after-REQBUFS and is
+ narrowly scoped (MMAP only) to avoid touching secure DMABUF paths.
+Author: agora <build@agora>
+Forwarded: not-needed
+Last-Update: 2026-04-29
+
+--- a/media/gpu/v4l2/v4l2_queue.h
++++ b/media/gpu/v4l2/v4l2_queue.h
+@@ -487,6 +487,9 @@ class MEDIA_GPU_EXPORT V4L2Queue
+   // Returns |memory_|, memory type of last buffers allocated by this V4L2Queue.
+   [[nodiscard]] v4l2_memory GetMemoryType() const;
+ 
++  // Returns whether buffers were allocated with V4L2_MEMORY_FLAG_NON_COHERENT.
++  [[nodiscard]] bool IsIncoherent() const { return incoherent_; }
++
+   // This returns the secure handle for a free buffer and then tags that buffer
+   // as having its handle claimed. It expects another call later to
+   // ReleaseSecureHandle to return control of the secure handle back to the
+--- a/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.cc
+@@ -607,8 +607,52 @@ bool V4L2StatelessVideoDecoderBackend::ApplyResolution(
+   format.fmt.pix_mp.width = pic_size.width();
+   format.fmt.pix_mp.height = pic_size.height();
+   if (device_->Ioctl(VIDIOC_S_FMT, &format) != 0) {
+-    VPLOGF(1) << "Failed setting OUTPUT format";
+-    return false;
++    // Some V4L2 stateless drivers (notably the upstream hantro driver
++    // used by the Raspberry Pi 5 rpi-hevc-dec) reject VIDIOC_S_FMT
++    // once OUTPUT buffers have been allocated (EBUSY).  Free the
++    // buffers, re-query the format, retry S_FMT with the new
++    // resolution, and re-allocate so decoding can proceed.  Limited
++    // to the EBUSY + MMAP case to avoid touching secure DMABUF paths.
++    const int saved_errno = errno;
++    const size_t saved_count = input_queue_->AllocatedBuffersCount();
++    const enum v4l2_memory saved_memory = input_queue_->GetMemoryType();
++    const bool saved_incoherent = input_queue_->IsIncoherent();
++    if (saved_errno != EBUSY || saved_count == 0 ||
++        saved_memory != V4L2_MEMORY_MMAP ||
++        input_queue_->FreeBuffersCount() != saved_count) {
++      errno = saved_errno;
++      VPLOGF(1) << "Failed setting OUTPUT format";
++      return false;
++    }
++    if (!input_queue_->DeallocateBuffers()) {
++      VPLOGF(1) << "Failed deallocating OUTPUT buffers after S_FMT EBUSY";
++      return false;
++    }
++    auto retry_ret = input_queue_->GetFormat().first;
++    if (!retry_ret) {
++      VPLOGF(1) << "Failed getting OUTPUT format after dealloc; "
++                << "OUTPUT queue left deallocated";
++      return false;
++    }
++    format = std::move(*retry_ret);
++    format.fmt.pix_mp.width = pic_size.width();
++    format.fmt.pix_mp.height = pic_size.height();
++    if (device_->Ioctl(VIDIOC_S_FMT, &format) != 0) {
++      VPLOGF(1) << "Failed setting OUTPUT format after dealloc; "
++                << "OUTPUT queue left deallocated";
++      return false;
++    }
++    const size_t reallocated = input_queue_->AllocateBuffers(
++        saved_count, saved_memory, saved_incoherent);
++    if (reallocated < saved_count) {
++      LOG(ERROR) << "Failed reallocating enough OUTPUT buffers after S_FMT, "
++                 << "requested: " << saved_count
++                 << " got: " << reallocated;
++      return false;
++    }
++    DVLOGF(2) << "Reallocated " << reallocated
++              << " OUTPUT buffers after S_FMT (requested " << saved_count
++              << ")";
+   }
+ 
+   return true;

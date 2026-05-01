@@ -1,0 +1,29 @@
+From: HEVC enable on Pi 5
+Subject: [PATCH] Probe /dev/video19 (rpi-hevc-dec) in addition to /dev/video10
+
+The RPi-Distro patch hardcoded /dev/video10 (Pi 4 stateful H.264 decoder)
+as the only candidate path in GetSupportedV4L2DecoderConfigs. On Pi 5 the
+stateless HEVC decoder is exposed at /dev/video19 (rpi-hevc-dec, BCM2712).
+Without probing it, chromium never advertises HEVC HW decode support and
+falls back to software decode.
+
+This patch keeps video10 for Pi 4 H.264 backward compat and adds video19
+so chromium also enumerates HEVC profiles via the existing V4L2 stateless
+H265 delegate path.
+
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -587,8 +587,11 @@ std::optional<SupportedVideoDecoderConfi
+ #elif BUILDFLAG(USE_V4L2_CODEC_RPI)
+   // Pi stateful decoder here  current google code doesn't look like it can
+   // cope with multiple devioces
+-  constexpr char kVideoDevicePattern[] = "/dev/video10";
+-  candidate_paths.push_back(kVideoDevicePattern);
++  // Pi 4 stateful H.264 / Pi 5 stateless HEVC decoders — probe both so that
++  // chromium reports HW decode support for all codecs the platform exposes.
++  candidate_paths.push_back("/dev/video10");
++  // Pi 5 BCM2712 rpi-hevc-dec (stateless HEVC).
++  candidate_paths.push_back("/dev/video19");
+ #else
+   constexpr char kVideoDevicePattern[] = "/dev/video";
+   constexpr int kMaxDevices = 256;

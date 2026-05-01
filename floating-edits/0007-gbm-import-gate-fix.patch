@@ -1,0 +1,73 @@
+--- a/ui/gfx/linux/gbm_wrapper.cc
++++ b/ui/gfx/linux/gbm_wrapper.cc
+@@ -426,10 +426,16 @@
+       return nullptr;
+     }
+ 
+-    int gbm_flags = 0;
+-    if ((gbm_flags = GetSupportedGbmFlags(format)) == 0) {
+-      LOG(ERROR) << "gbm format not supported: " << DrmFormatToString(format);
+-      return nullptr;
++    // PATCH_GBM_IMPORT_FIX: weaken the allocation-capability gate for the
++    // import path. Mesa v3d (Pi 5) cannot allocate NV12 BOs but may still be
++    // able to import an existing dmabuf with an explicit modifier
++    // (BROADCOM_SAND128 from rpi-hevc-dec V4L2 capture buffers).
++    int gbm_flags = GetSupportedGbmFlags(format);
++    if (gbm_flags == 0) {
++      LOG(WARNING) << "PATCH_GBM_IMPORT: gbm reports no supported flags for "
++                   << DrmFormatToString(format)
++                   << "; falling back to GBM_BO_USE_TEXTURING for import";
++      gbm_flags = 0;  // PATCH_GBM_IMPORT no flags for import
+     }
+ 
+     struct gbm_import_fd_modifier_data fd_data;
+@@ -448,14 +454,39 @@
+       UNSAFE_TODO(fd_data.offsets[i]) = handle.planes[i].offset;
+     }
+ 
++    // PATCH_GBM_IMPORT_FIX diag: log handle/modifier/strides before import.
++    {
++      std::string sstr, ostr, fstr;
++      for (size_t i = 0; i < handle.planes.size(); ++i) {
++        sstr += " " + std::to_string(handle.planes[i].stride);
++        ostr += " " + std::to_string(handle.planes[i].offset);
++        fstr += " " + std::to_string(handle.planes[i].fd.get());
++      }
++      LOG(WARNING) << "PATCH_GBM_IMPORT pre-import: format="
++                   << DrmFormatToString(format)
++                   << " size=" << size.width() << "x" << size.height()
++                   << " modifier=0x" << std::hex << handle.modifier << std::dec
++                   << " planes=" << handle.planes.size()
++                   << " strides=[" << sstr << " ]"
++                   << " offsets=[" << ostr << " ]"
++                   << " fds=[" << fstr << " ]"
++                   << " gbm_flags=0x" << std::hex << gbm_flags << std::dec;
++    }
++
+     // The fd passed to gbm_bo_import is not ref-counted and need to be
+     // kept open for the lifetime of the buffer.
+     struct gbm_bo* bo = gbm_bo_import(device_.get(), GBM_BO_IMPORT_FD_MODIFIER,
+                                       &fd_data, gbm_flags);
+     if (!bo) {
+-      LOG(ERROR) << "nullptr returned from gbm_bo_import";
++      LOG(ERROR) << "PATCH_GBM_IMPORT: gbm_bo_import returned NULL for "
++                 << DrmFormatToString(format)
++                 << " (modifier=0x" << std::hex << handle.modifier << std::dec
++                 << "); see Mesa/dmesg logs";
+       return nullptr;
+     }
++    LOG(WARNING) << "PATCH_GBM_IMPORT post-import: SUCCESS for "
++                 << DrmFormatToString(format) << " mod=0x"
++                 << std::hex << handle.modifier << std::dec;
+ 
+     return std::make_unique<Buffer>(bo, format, gbm_flags, handle.modifier,
+                                     size, std::move(handle));
+@@ -471,7 +502,7 @@
+     if (gbm_device_is_format_supported(device_.get(), format, gbm_flags)) {
+       return gbm_flags;
+     }
+-    gbm_flags = GBM_BO_USE_TEXTURING;
++    gbm_flags = 0;  // PATCH_GBM_IMPORT no flags for import
+     if (gbm_device_is_format_supported(device_.get(), format, gbm_flags)) {
+       return gbm_flags;
+     }

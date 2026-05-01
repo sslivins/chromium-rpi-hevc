@@ -1,0 +1,5 @@
+<!DOCTYPE html><html><body style="margin:0;background:#000;color:#fff">
+<video id="v" autoplay muted controls style="width:100vw;height:100vh" src="file:///home/agora/composer-proto/test_hevc.mp4"></video>
+<div style="position:fixed;top:10px;left:10px;font-family:monospace;background:#0008;padding:8px">HEVC test</div>
+<script>const v=document.getElementById('v');v.addEventListener('error',e=>document.title='ERR '+v.error?.message);v.addEventListener('playing',()=>document.title='PLAYING '+v.videoWidth+'x'+v.videoHeight);</script>
+</body></html>

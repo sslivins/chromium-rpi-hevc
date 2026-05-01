@@ -1,0 +1,30 @@
+# Build / output
+out/
+work/
+.ccache/
+
+# Chromium source trees (downloaded by build.sh, do not commit)
+chromium-*/
+*.dsc
+*.tar.xz
+*.tar.gz
+*.orig.tar.*
+
+# Debian build artifacts
+*.deb
+*.changes
+*.buildinfo
+*.dsc
+
+# Logs and cores
+*.log
+*.core
+core.*
+
+# Local
+.DS_Store
+Thumbs.db
+*~
+*.swp
+.vscode/
+.idea/

@@ -1,0 +1,36 @@
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -53,6 +53,10 @@
+ #define DRM_FORMAT_MOD_MTK_16L_32S_TILE 0x0b00000000000001
+ #endif
+ 
++#ifndef DRM_FORMAT_MOD_BROADCOM_SAND128
++#define DRM_FORMAT_MOD_BROADCOM_SAND128 0x0700000000000004
++#endif
++
+ namespace {
+ int HandledIoctl(int fd, int request, void* arg) {
+   return HANDLE_EINTR(ioctl(fd, request, arg));
+@@ -247,6 +251,9 @@
+   if (video_fourcc == Fourcc(Fourcc::MM21)) {
+     modifiers = DRM_FORMAT_MOD_MTK_16L_32S_TILE;
+   }
++  if (video_fourcc == Fourcc(Fourcc::NC12)) {
++    modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
++  }
+ #endif
+   const size_t num_buffers = pix_mp.num_planes;
+   const size_t num_color_planes = VideoFrame::NumPlanes(video_format);
+@@ -279,6 +286,12 @@
+     // It is safe to cast to size_t.
+     const size_t y_stride_abs = static_cast<size_t>(y_stride);
+     switch (pix_fmt) {
++#if BUILDFLAG(USE_V4L2_CODEC_RPI)
++#ifndef V4L2_PIX_FMT_NC12
++#define V4L2_PIX_FMT_NC12 v4l2_fourcc('N', 'C', '1', '2')
++#endif
++      case V4L2_PIX_FMT_NC12:
++#endif
+       case V4L2_PIX_FMT_NV12:
+         // The stride of UV is the same as Y in NV12.
+         // The height is half of Y plane.

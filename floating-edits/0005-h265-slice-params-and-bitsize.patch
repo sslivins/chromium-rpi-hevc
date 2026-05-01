@@ -1,0 +1,379 @@
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
+@@ -14,6 +14,7 @@
+ #include "media/gpu/h265_dpb.h"
+ 
+ struct v4l2_ctrl_hevc_decode_params;
++struct v4l2_ctrl_hevc_slice_params;  // PATCH_0006_HEVC_SLICE_PARAMS
+ 
+ namespace media {
+ 
+@@ -81,6 +82,26 @@
+   // Indicate that a frame is dropped because it's not decodable
+   // (RASL frame). This is updated every SubmitFrameMetadata().
+   bool drop_frame_ = false;
++
++  // PATCH_0006_HEVC_SLICE_PARAMS : Per-frame HEVC slice_params accumulator. The Pi
++  // rpi-hevc-dec driver requires V4L2_CID_STATELESS_HEVC_SLICE_PARAMS as a
++  // dynamic array control. We accumulate one entry per call to SubmitSlice and
++  // submit them all in a single S_EXT_CTRLS in SubmitDecode before queueing
++  // the output buffer.
++  std::vector<struct v4l2_ctrl_hevc_slice_params> slice_params_;
++  // Running byte offset into the per-frame OUTPUT buffer (matches what
++  // V4L2StatelessVideoDecoderBackend::SubmitSlice appends).
++  size_t accumulated_data_size_ = 0;
++  // Cached width-in-CTBs for slice_segment_addr calculation across slices.
++  int min_cb_log2_size_y_ = 0;
++  int ctb_size_y_ = 0;
++  // Track which POCs have been seen as DPB refs in this frame's
++  // SubmitFrameMetadata so SubmitSlice can map ref pictures to dpb indexes.
++  // Keyed by pic_order_cnt_val.
++  // (kept simple: we re-scan v4l2 dpb table built by FillInV4L2DPB).
++  std::vector<int32_t> dpb_poc_map_;
++  // Whether we've explicitly set the START_CODE control for this device yet.
++  bool start_code_control_set_ = false;
+ };
+ 
+ }  // namespace media
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+@@ -189,6 +189,23 @@
+   return ref_surfaces;
+ }
+ 
++static void DumpHevcUapiSizesOnce() {
++  static bool done = false;
++  if (done) return;
++  done = true;
++  VLOG(1) << "[HEVC_DBG_UAPI] sizeof(slice_params)=" << sizeof(struct v4l2_ctrl_hevc_slice_params)
++          << " off(slice_segment_addr)=" << offsetof(struct v4l2_ctrl_hevc_slice_params, slice_segment_addr)
++          << " off(ref_idx_l0)=" << offsetof(struct v4l2_ctrl_hevc_slice_params, ref_idx_l0)
++          << " off(ref_idx_l1)=" << offsetof(struct v4l2_ctrl_hevc_slice_params, ref_idx_l1)
++          << " off(short_term_ref_pic_set_size)=" << offsetof(struct v4l2_ctrl_hevc_slice_params, short_term_ref_pic_set_size)
++          << " off(flags)=" << offsetof(struct v4l2_ctrl_hevc_slice_params, flags);
++  VLOG(1) << "[HEVC_DBG_UAPI] sizeof(decode_params)=" << sizeof(struct v4l2_ctrl_hevc_decode_params)
++          << " off(dpb)=" << offsetof(struct v4l2_ctrl_hevc_decode_params, dpb)
++          << " off(flags)=" << offsetof(struct v4l2_ctrl_hevc_decode_params, flags)
++          << " sizeof(sps)=" << sizeof(struct v4l2_ctrl_hevc_sps)
++          << " sizeof(pps)=" << sizeof(struct v4l2_ctrl_hevc_pps);
++}
++
+ H265Decoder::H265Accelerator::Status
+ V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
+     const H265SPS* sps,
+@@ -199,6 +216,7 @@
+     const H265Picture::Vector& ref_pic_set_st_curr_after,
+     const H265Picture::Vector& ref_pic_set_st_curr_before,
+     scoped_refptr<H265Picture> pic) {
++  DumpHevcUapiSizesOnce();
+   drop_frame_ = false;
+   if (pic->no_rasl_output_flag_ &&
+       (slice_hdr->nal_unit_type == H265NALU::RASL_N ||
+@@ -209,6 +227,15 @@
+     return Status::kOk;
+   }
+ 
++  // PATCH_0006_HEVC_SLICE_PARAMS: reset per-frame slice_params accumulator and
++  // cache derived block sizes for slice_segment_addr.
++  slice_params_.clear();
++  accumulated_data_size_ = 0;
++  dpb_poc_map_.clear();
++  min_cb_log2_size_y_ = sps->log2_min_luma_coding_block_size_minus3 + 3;
++  ctb_size_y_ = 1 << (min_cb_log2_size_y_ +
++      sps->log2_diff_max_min_luma_coding_block_size);
++
+   struct v4l2_ext_control ctrl;
+   std::vector<struct v4l2_ext_control> ctrls;
+ 
+@@ -266,6 +293,27 @@
+   SET_V4L2_SPS_FLAG_IF(strong_intra_smoothing_enabled_flag,
+                        V4L2_HEVC_SPS_FLAG_STRONG_INTRA_SMOOTHING_ENABLED);
+ #undef SET_V4L2_SPS_FLAG_IF
++  // PATCH_0007_DEBUG: dump SPS so we can verify rpi-hevc-dec geometry
++  {
++    const __u32 ctb_size_y = 1u << (v4l2_sps.log2_min_luma_coding_block_size_minus3 + 3 + v4l2_sps.log2_diff_max_min_luma_coding_block_size);
++    const __u32 ctbs_x = (v4l2_sps.pic_width_in_luma_samples + ctb_size_y - 1) / ctb_size_y;
++    const __u32 ctbs_y = (v4l2_sps.pic_height_in_luma_samples + ctb_size_y - 1) / ctb_size_y;
++    VLOG(1) << "[HEVC_DBG_SPS] w=" << v4l2_sps.pic_width_in_luma_samples
++            << " h=" << v4l2_sps.pic_height_in_luma_samples
++            << " cfi=" << (int)v4l2_sps.chroma_format_idc
++            << " bd_y-8=" << (int)v4l2_sps.bit_depth_luma_minus8
++            << " bd_c-8=" << (int)v4l2_sps.bit_depth_chroma_minus8
++            << " log2minCB-3=" << (int)v4l2_sps.log2_min_luma_coding_block_size_minus3
++            << " log2diffMaxMinCB=" << (int)v4l2_sps.log2_diff_max_min_luma_coding_block_size
++            << " log2minTB-2=" << (int)v4l2_sps.log2_min_luma_transform_block_size_minus2
++            << " log2diffMaxMinTB=" << (int)v4l2_sps.log2_diff_max_min_luma_transform_block_size
++            << " log2maxPocLsb-4=" << (int)v4l2_sps.log2_max_pic_order_cnt_lsb_minus4
++            << " maxSub-1=" << (int)v4l2_sps.sps_max_sub_layers_minus1
++            << " numSTRPS=" << (int)v4l2_sps.num_short_term_ref_pic_sets
++            << " numLTRPS=" << (int)v4l2_sps.num_long_term_ref_pics_sps
++            << " CTBy=" << ctb_size_y << " gridX=" << ctbs_x << " gridY=" << ctbs_y << " CTBs=" << (ctbs_x*ctbs_y)
++            << " sps_flags=" << std::hex << v4l2_sps.flags << std::dec;
++  }
+   memset(&ctrl, 0, sizeof(ctrl));
+   ctrl.id = V4L2_CID_STATELESS_HEVC_SPS;
+   ctrl.size = sizeof(v4l2_sps);
+@@ -364,6 +412,18 @@
+                        V4L2_HEVC_PPS_FLAG_UNIFORM_SPACING);
+ #undef SET_V4L2_PPS_FLAG_IF
+ 
++  VLOG(1) << "[HEVC_DBG_PPS] init_qp-26=" << (int)v4l2_pps.init_qp_minus26
++          << " cuQpDeltaDepth=" << (int)v4l2_pps.diff_cu_qp_delta_depth
++          << " cb_qp_off=" << (int)v4l2_pps.pps_cb_qp_offset
++          << " cr_qp_off=" << (int)v4l2_pps.pps_cr_qp_offset
++          << " beta/2=" << (int)v4l2_pps.pps_beta_offset_div2
++          << " tc/2=" << (int)v4l2_pps.pps_tc_offset_div2
++          << " mergeLvl-2=" << (int)v4l2_pps.log2_parallel_merge_level_minus2
++          << " l0Active-1=" << (int)v4l2_pps.num_ref_idx_l0_default_active_minus1
++          << " l1Active-1=" << (int)v4l2_pps.num_ref_idx_l1_default_active_minus1
++          << " tilesC-1=" << (int)v4l2_pps.num_tile_columns_minus1
++          << " tilesR-1=" << (int)v4l2_pps.num_tile_rows_minus1
++          << " pps_flags=" << std::hex << v4l2_pps.flags << std::dec;
+   memset(&ctrl, 0, sizeof(ctrl));
+   ctrl.id = V4L2_CID_STATELESS_HEVC_PPS;
+   ctrl.size = sizeof(v4l2_pps);
+@@ -494,6 +554,21 @@
+                     ref_pic_set_st_curr_after, ref_pic_set_st_curr_before);
+   dec_surface->SetReferenceSurfaces(ref_surfaces);
+ 
++  // PATCH_0006_HEVC_SLICE_PARAMS: snapshot the DPB POC list so SubmitSlice can
++  // resolve ref_pic_list0/1 entries to dpb indexes via POC compare.
++  dpb_poc_map_.resize(v4l2_decode_param.num_active_dpb_entries);
++  for (unsigned int k = 0; k < v4l2_decode_param.num_active_dpb_entries; ++k) {
++    dpb_poc_map_[k] = v4l2_decode_param.dpb[k].pic_order_cnt_val;
++  }
++
++  VLOG(1) << "[HEVC_DBG_DP] poc=" << v4l2_decode_param.pic_order_cnt_val
++          << " stRPSsz=" << v4l2_decode_param.short_term_ref_pic_set_size
++          << " ltRPSsz=" << v4l2_decode_param.long_term_ref_pic_set_size
++          << " nDPB=" << (int)v4l2_decode_param.num_active_dpb_entries
++          << " nBefore=" << (int)v4l2_decode_param.num_poc_st_curr_before
++          << " nAfter=" << (int)v4l2_decode_param.num_poc_st_curr_after
++          << " nLT=" << (int)v4l2_decode_param.num_poc_lt_curr
++          << " dp_flags=" << std::hex << v4l2_decode_param.flags << std::dec;
+   memset(&ctrl, 0, sizeof(ctrl));
+   ctrl.id = V4L2_CID_STATELESS_HEVC_DECODE_PARAMS;
+   ctrl.size = sizeof(v4l2_decode_param);
+@@ -533,12 +608,171 @@
+   scoped_refptr<V4L2DecodeSurface> dec_surface =
+       H265PictureToV4L2DecodeSurface(pic.get());
+ 
+-  // Add the 3-bytes NAL start code.
+-  // TODO: don't do it here, but have it passed from the parser?
++  // PATCH_0006_HEVC_SLICE_PARAMS: Build v4l2_ctrl_hevc_slice_params for this slice.
++  // Layout in OUTPUT buffer (Annex-B mode), per-slice block:
++  //   [00 00 01] [2-byte NAL header] [slice header bits + EPB] [payload]
++  // - data_byte_offset: byte offset (frame-buffer-relative) of slice
++  //   payload (i.e. start of slice_segment_data).
++  // - bit_size: end-of-slice bit offset in frame buffer; len in bytes
++  //   = (bit_size + 7)/8 - data_byte_offset (per kernel rpi-hevc-dec).
++  const size_t slice_off_in_frame = accumulated_data_size_;
++  const size_t slice_bytes = size + 3;  // 3 = Annex-B start code
++  // header_size is in BYTES of the stripped NAL (including the 2-byte
++  // NAL header), per h265_parser.cc:1479. EPB byte count is added
++  // because they are physically present in the encoded buffer.
++  const size_t header_bytes_in_buffer =
++      slice_hdr->header_size +
++      slice_hdr->header_emulation_prevention_bytes;
++  // 3 (Annex-B start code) + slice header bytes (with EPB) [NAL hdr inc.]
++  const size_t data_off_in_frame =
++      slice_off_in_frame + 3 + header_bytes_in_buffer;
++  const size_t end_off_in_frame = slice_off_in_frame + slice_bytes;
++
++  struct v4l2_ctrl_hevc_slice_params sp;
++  memset(&sp, 0, sizeof(sp));
++  // Per rpi-hevc-dec (drivers/media/platform/raspberrypi/hevc_dec/
++  // hevc_d_h265.c:1779): byte_size = DIV_ROUND_UP(bit_size, 8); the
++  // driver checks data_byte_offset + byte_size <= bytesused. So
++  // bit_size measures the slice DATA length (from data_byte_offset
++  // to end of slice payload), in bits. Driver tolerates including
++  // rbsp_stop_one_bit byte.
++  sp.bit_size = static_cast<__u32>(end_off_in_frame * 8);  // PATCH_BITSIZE_FIX
++  sp.data_byte_offset = static_cast<__u32>(data_off_in_frame);
++  sp.num_entry_point_offsets = 0;  // tiles/wpp not implemented yet
++  sp.nal_unit_type = static_cast<__u8>(slice_hdr->nal_unit_type);
++  sp.nuh_temporal_id_plus1 =
++      static_cast<__u8>(slice_hdr->temporal_id + 1);
++  // V4L2_HEVC_SLICE_TYPE_B=0 P=1 I=2  matches H265SliceHeader::kSliceType*
++  sp.slice_type = static_cast<__u8>(slice_hdr->slice_type);
++  sp.colour_plane_id = static_cast<__u8>(slice_hdr->colour_plane_id);
++  sp.slice_pic_order_cnt = pic->pic_order_cnt_val_;
++  sp.num_ref_idx_l0_active_minus1 =
++      static_cast<__u8>(slice_hdr->num_ref_idx_l0_active_minus1);
++  sp.num_ref_idx_l1_active_minus1 =
++      static_cast<__u8>(slice_hdr->num_ref_idx_l1_active_minus1);
++  sp.collocated_ref_idx =
++      static_cast<__u8>(slice_hdr->collocated_ref_idx);
++  sp.five_minus_max_num_merge_cand =
++      static_cast<__u8>(slice_hdr->five_minus_max_num_merge_cand);
++  sp.slice_qp_delta = static_cast<__s8>(slice_hdr->slice_qp_delta);
++  sp.slice_cb_qp_offset = static_cast<__s8>(slice_hdr->slice_cb_qp_offset);
++  sp.slice_cr_qp_offset = static_cast<__s8>(slice_hdr->slice_cr_qp_offset);
++  sp.slice_act_y_qp_offset = 0;
++  sp.slice_act_cb_qp_offset = 0;
++  sp.slice_act_cr_qp_offset = 0;
++  sp.slice_beta_offset_div2 =
++      static_cast<__s8>(slice_hdr->slice_beta_offset_div2);
++  sp.slice_tc_offset_div2 =
++      static_cast<__s8>(slice_hdr->slice_tc_offset_div2);
++  sp.pic_struct = V4L2_HEVC_SEI_PIC_STRUCT_FRAME;
++  sp.slice_segment_addr =
++      static_cast<__u32>(slice_hdr->slice_segment_address);
++
++  // ref_idx_l0/l1: map ref_pic_list0/1 entries to indexes in dpb_poc_map_.
++  // 0xff = unused.
++  std::fill_n(sp.ref_idx_l0, V4L2_HEVC_DPB_ENTRIES_NUM_MAX, 0xff);
++  std::fill_n(sp.ref_idx_l1, V4L2_HEVC_DPB_ENTRIES_NUM_MAX, 0xff);
++  if (slice_hdr->slice_type != H265SliceHeader::kSliceTypeI) {
++    const int n0 = std::min<int>(slice_hdr->num_ref_idx_l0_active_minus1 + 1,
++                                 V4L2_HEVC_DPB_ENTRIES_NUM_MAX);
++    for (int r = 0; r < n0 && r < static_cast<int>(ref_pic_list0.size()); ++r) {
++      const auto& rp = ref_pic_list0[r];
++      if (!rp) continue;
++      for (size_t j = 0; j < dpb_poc_map_.size(); ++j) {
++        if (dpb_poc_map_[j] == rp->pic_order_cnt_val_) {
++          sp.ref_idx_l0[r] = static_cast<__u8>(j);
++          break;
++        }
++      }
++    }
++    if (slice_hdr->slice_type == H265SliceHeader::kSliceTypeB) {
++      const int n1 = std::min<int>(
++          slice_hdr->num_ref_idx_l1_active_minus1 + 1,
++          V4L2_HEVC_DPB_ENTRIES_NUM_MAX);
++      for (int r = 0; r < n1 && r < static_cast<int>(ref_pic_list1.size()); ++r) {
++        const auto& rp = ref_pic_list1[r];
++        if (!rp) continue;
++        for (size_t j = 0; j < dpb_poc_map_.size(); ++j) {
++          if (dpb_poc_map_[j] == rp->pic_order_cnt_val_) {
++            sp.ref_idx_l1[r] = static_cast<__u8>(j);
++            break;
++          }
++        }
++      }
++    }
++  }
++
++  sp.short_term_ref_pic_set_size =
++      static_cast<__u16>(slice_hdr->st_rps_bits);
++  sp.long_term_ref_pic_set_size =
++      static_cast<__u16>(slice_hdr->lt_rps_bits);
++
++  // pred_weight_table: zero-initialised. Will be wrong for streams that
++  // actually use weighted prediction; revisit when we hit that.
++  // (Bringup focus: get I/P/B with default weights working first.)
++  sp.pred_weight_table.luma_log2_weight_denom =
++      static_cast<__u8>(slice_hdr->pred_weight_table.luma_log2_weight_denom);
++  sp.pred_weight_table.delta_chroma_log2_weight_denom = static_cast<__s8>(
++      slice_hdr->pred_weight_table.delta_chroma_log2_weight_denom);
++
++  __u64 flags = 0;
++  if (slice_hdr->slice_sao_luma_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_LUMA;
++  if (slice_hdr->slice_sao_chroma_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_CHROMA;
++  if (slice_hdr->slice_temporal_mvp_enabled_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_TEMPORAL_MVP_ENABLED;
++  if (slice_hdr->mvd_l1_zero_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_MVD_L1_ZERO;
++  if (slice_hdr->cabac_init_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_CABAC_INIT;
++  if (slice_hdr->collocated_from_l0_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_COLLOCATED_FROM_L0;
++  if (slice_hdr->slice_deblocking_filter_disabled_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_DEBLOCKING_FILTER_DISABLED;
++  if (slice_hdr->slice_loop_filter_across_slices_enabled_flag)
++    flags |=
++        V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_LOOP_FILTER_ACROSS_SLICES_ENABLED;
++  if (slice_hdr->dependent_slice_segment_flag)
++    flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT;
++  VLOG(1) << "[HEVC_DBG] sliceN=" << slice_off_in_frame
++          << " data_off=" << sp.data_byte_offset
++          << " bit_size=" << sp.bit_size
++          << " slice_type=" << static_cast<int>(sp.slice_type)
++          << " nut=" << static_cast<int>(sp.nal_unit_type)
++          << " tid+1=" << static_cast<int>(sp.nuh_temporal_id_plus1)
++          << " seg_addr=" << sp.slice_segment_addr
++          << " qp=" << static_cast<int>(sp.slice_qp_delta)
++          << " poc=" << sp.slice_pic_order_cnt
++          << " l0_active-1=" << static_cast<int>(sp.num_ref_idx_l0_active_minus1)
++          << " l1_active-1=" << static_cast<int>(sp.num_ref_idx_l1_active_minus1)
++          << " l0[0]=" << static_cast<int>(sp.ref_idx_l0[0])
++          << " col_ref=" << static_cast<int>(sp.collocated_ref_idx)
++          << " 5-mmnc=" << static_cast<int>(sp.five_minus_max_num_merge_cand);
++  VLOG(1) << "[HEVC_DBG2] flags=0x" << std::hex << flags << std::dec
++          << " header_size=" << slice_hdr->header_size
++          << " hdr_epb=" << slice_hdr->header_emulation_prevention_bytes
++          << " size=" << size
++          << " first3=" << std::hex
++          << static_cast<int>(data[0]) << ","
++          << static_cast<int>(data[1]) << ","
++          << static_cast<int>(data[2]) << std::dec;
++  sp.flags = flags;
++
++  // PATCH_0007_DEBUG: normalize I-slice inactive fields
++  if (sp.slice_type == 2 /* I */) {
++    sp.num_ref_idx_l0_active_minus1 = 0;
++    sp.num_ref_idx_l1_active_minus1 = 0;
++    sp.collocated_ref_idx = 0;
++    sp.five_minus_max_num_merge_cand = 0;
++    sp.flags &= ~V4L2_HEVC_SLICE_PARAMS_FLAG_COLLOCATED_FROM_L0;
++  }
++  slice_params_.push_back(sp);
++  accumulated_data_size_ = end_off_in_frame;
++
++  // Original logic: append [00 00 01][NAL] to OUTPUT buffer.
+   const size_t data_copy_size = size + 3;
+   if (dec_surface->secure_handle()) {
+-    // The secure world already post-processed the secure buffer so that all of
+-    // the slice NALUs w/ 3 byte start codes are the only contents.
+     return surface_handler_->SubmitSlice(dec_surface.get(), nullptr,
+                                          data_copy_size)
+                ? Status::kOk
+@@ -563,6 +797,35 @@
+   scoped_refptr<V4L2DecodeSurface> dec_surface =
+       H265PictureToV4L2DecodeSurface(pic.get());
+ 
++  // PATCH_0006_HEVC_SLICE_PARAMS: Submit per-slice array + START_CODE control as
++  // part of the same media request before queuing the OUTPUT buffer.
++  if (!slice_params_.empty()) {
++    std::vector<struct v4l2_ext_control> ctrls;
++    struct v4l2_ext_control sc_ctrl;
++    memset(&sc_ctrl, 0, sizeof(sc_ctrl));
++    sc_ctrl.id = V4L2_CID_STATELESS_HEVC_START_CODE;
++    sc_ctrl.value = V4L2_STATELESS_HEVC_START_CODE_ANNEX_B;
++    ctrls.push_back(sc_ctrl);
++
++    struct v4l2_ext_control sp_ctrl;
++    memset(&sp_ctrl, 0, sizeof(sp_ctrl));
++    sp_ctrl.id = V4L2_CID_STATELESS_HEVC_SLICE_PARAMS;
++    sp_ctrl.size = static_cast<__u32>(
++        slice_params_.size() * sizeof(struct v4l2_ctrl_hevc_slice_params));
++    sp_ctrl.ptr = slice_params_.data();
++    ctrls.push_back(sp_ctrl);
++
++    struct v4l2_ext_controls ext_ctrls;
++    memset(&ext_ctrls, 0, sizeof(ext_ctrls));
++    ext_ctrls.count = ctrls.size();
++    ext_ctrls.controls = ctrls.data();
++    dec_surface->PrepareSetCtrls(&ext_ctrls);
++    if (device_->Ioctl(VIDIOC_S_EXT_CTRLS, &ext_ctrls) != 0) {
++      VPLOGF(1) << "VIDIOC_S_EXT_CTRLS failed for SLICE_PARAMS array";
++      return Status::kFail;
++    }
++  }
++
+   DVLOGF(4) << "Submitting decode for surface: " << dec_surface->ToString();
+   surface_handler_->DecodeSurface(dec_surface);
+   return Status::kOk;
+@@ -578,6 +841,10 @@
+ 
+ void V4L2VideoDecoderDelegateH265::Reset() {
+   drop_frame_ = false;
++  // PATCH_0006_HEVC_SLICE_PARAMS
++  slice_params_.clear();
++  accumulated_data_size_ = 0;
++  dpb_poc_map_.clear();
+ }
+ 
+ bool V4L2VideoDecoderDelegateH265::IsChromaSamplingSupported(
