@@ -32,7 +32,7 @@ export LDFLAGS="-stdlib=libc++ -static-libstdc++"
 export BUILD_CXXFLAGS="-stdlib=libc++"
 export BUILD_LDFLAGS="-stdlib=libc++ -static-libstdc++"
 
-JOBS="${JOBS:-12}"
+JOBS="${JOBS:-$(nproc)}"
 SRC_DIR=/build/src
 mkdir -p "$SRC_DIR" /out
 

@@ -18,7 +18,7 @@
 #     basename collisions with Debian/RPi patches
 set -euo pipefail
 
-JOBS="${JOBS:-12}"
+JOBS="${JOBS:-$(nproc)}"
 SRC_DIR=/build/src
 mkdir -p "$SRC_DIR" /out
 cd "$SRC_DIR"

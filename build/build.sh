@@ -22,7 +22,7 @@
 #   /out/*.deb
 set -euo pipefail
 
-JOBS="${JOBS:-12}"
+JOBS="${JOBS:-$(nproc)}"
 SRC_DIR=/build/src
 TOOLS_DIR=/build-tools
 RPI_DEBIAN="${TOOLS_DIR}/rpi-distro-chromium/debian"
