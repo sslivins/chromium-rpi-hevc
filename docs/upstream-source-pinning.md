@@ -1,7 +1,7 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:147.0.7727.101-1~deb13u1+rpt1`. The patches under
+version: `1:147.0.7727.116-1~deb13u1+rpt1`. The patches under
 `patches/` were written and tested against this exact source tree;
 applying them to a different version is not guaranteed to work.
 
@@ -15,7 +15,7 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~787 MB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-147.0.7727.101`, with SHA256 in `build/build.sh` |
+| Chromium source (`*.orig.tar.xz`, ~787 MB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-147.0.7727.116`, with SHA256 in `build/build.sh` |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~500 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
 
@@ -94,9 +94,9 @@ re-base our patches onto it:
 
 ```bash
 # Inside the build container after STAGE 1, you should see:
-#   ok: chromium_147.0.7727.101.orig.tar.xz (d4a5f648...)
-#   ok: chromium_147.0.7727.101-1~deb13u1+rpt1.debian.tar.xz (6ed6ea4f...)
-#   ok: chromium_147.0.7727.101-1~deb13u1+rpt1.dsc (ab18d584...)
+#   ok: chromium_147.0.7727.116.orig.tar.xz (b808992f...)
+#   ok: chromium_147.0.7727.116-1~deb13u1+rpt1.debian.tar.xz (a8845002...)
+#   ok: chromium_147.0.7727.116-1~deb13u1+rpt1.dsc (b0ac0f71...)
 sha256sum /build/src/chromium_*.{orig.tar.xz,debian.tar.xz,dsc}
 ```
 
@@ -108,14 +108,14 @@ recorded but did not generate.
 
 The RPi-Distro `debian/` overlay (`*.debian.tar.xz`) is
 content-equivalent to the GitHub tag
-[`pios/1%147.0.7727.101-1_deb13u1+rpt1`](https://github.com/RPi-Distro/chromium/tree/pios/1%25147.0.7727.101-1_deb13u1+rpt1)
-(commit `b46f7095355d`). If our release is ever lost, this tag is a
+[`pios/1%147.0.7727.116-1_deb13u1+rpt1`](https://github.com/RPi-Distro/chromium/tree/pios/1%25147.0.7727.116-1_deb13u1+rpt1)
+(commit `c5a65d9`). If our release is ever lost, this tag is a
 permanent independent record of what we patched against — extract
 the GitHub tag's `debian/` directory, repackage as a `.tar.xz`, and
 the SHA256 should match.
 
 The upstream chromium tarball (`*.orig.tar.xz`) is a repackage of
 Google's upstream chromium release. Google's own snapshots are at
-`https://commondatastorage.googleapis.com/chromium-browser-official/chromium-147.0.7727.101.tar.xz`
+`https://commondatastorage.googleapis.com/chromium-browser-official/chromium-147.0.7727.116.tar.xz`
 or similar paths, but RPi sometimes runs `xz -e` re-compression which
 changes the SHA256. Treat our release as the authoritative copy.

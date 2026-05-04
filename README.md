@@ -2,7 +2,7 @@
 
 End-to-end HEVC hardware decode on Raspberry Pi 5 via the upstream
 **`rpi-hevc-dec`** stateless V4L2 driver (`/dev/video19`), in Chromium
-147.0.7727.101 built for Debian Trixie (arm64).
+147.0.7727.116 built for Debian Trixie (arm64).
 
 ## Status
 
@@ -18,12 +18,12 @@ End-to-end HEVC hardware decode on Raspberry Pi 5 via the upstream
 
 ## Source / version pin
 
-- Upstream package: `chromium 1:147.0.7727.101-1~deb13u1+rpt1`
+- Upstream package: `chromium 1:147.0.7727.116-1~deb13u1+rpt1`
 - Distribution: Debian Trixie (13) on Raspberry Pi
 - **Source is pinned and SHA256-verified.** `build.sh` fetches the
   three source files (`*.orig.tar.xz`, `*.debian.tar.xz`, `*.dsc`)
   from a frozen mirror published as a GitHub Release on this repo
-  (tag `upstream-source-147.0.7727.101`). The base Docker image is
+  (tag `upstream-source-147.0.7727.116`). The base Docker image is
   pinned to a specific `debian:trixie` manifest digest. See
   [`docs/upstream-source-pinning.md`](docs/upstream-source-pinning.md)
   for details and the bump procedure.
@@ -95,7 +95,7 @@ cp -r patches $ROOT/patches
 ### First full build (`build.sh`)
 
 This downloads the pinned chromium source (~790 MB compressed) from
-this repo's `upstream-source-147.0.7727.101` GitHub Release and
+this repo's `upstream-source-147.0.7727.116` GitHub Release and
 SHA256-verifies it, appends `/patches/*.patch` to
 `debian/patches/series`, and runs the full Debian build via
 `dpkg-buildpackage`. Output is .debs in `/out`.
