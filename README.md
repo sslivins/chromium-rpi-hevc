@@ -151,9 +151,10 @@ ssh <user>@<pi-ip> 'sudo dpkg -i /tmp/chromium*.deb'
 ```
 
 This installs `/usr/lib/chromium/chromium` and pulls in all support
-files (locales, sandbox, driver). The known `en-US.pak` packaging
-collision between `chromium-common` and `chromium-l10n` produces a
-warning but both packages still install cleanly and runtime works.
+files (locales, sandbox, driver). As of v0.2.1 the `en-US.pak`
+packaging collision between `chromium-common` and `chromium-l10n` is
+fixed (chromium-common is the sole owner) so `dpkg -i` installs
+cleanly without `--force-overwrite`.
 
 ### Option B — drop in just the binary (for fast dev iteration)
 
@@ -197,10 +198,6 @@ scp /tmp/screen.png back-to-host:.
 
 - Tested only at 1920×1080 Main-profile HEVC so far. Other
   resolutions, Main10, tiles/WPP have not been exercised.
-- `chromium-common` and `chromium-l10n` both ship
-  `/usr/lib/chromium/locales/en-US.pak` — `dpkg -i` warns "trying to
-  overwrite" but both still install. Should be fixed in
-  `debian/rules` packaging logic.
 - `plymouthd --mode=boot` can stay alive past boot and hold
   `/dev/dri/card1`, blocking `cage` from starting on the next reboot.
   Manual fix: `sudo plymouth quit; sudo pkill -9 plymouthd`. This is

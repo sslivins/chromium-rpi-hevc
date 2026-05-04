@@ -1,0 +1,70 @@
+Description: pi5 v4l2_utils fixes — probe /dev/video19, SAND128 modifier, NC12 stride.
+ Consolidated from v0.2.0 patches 0001 (probe-video19), 0006 (broadcom-sand128-modifier),
+ and 0010 (nc12-stride-derivation). All three modify only media/gpu/v4l2/v4l2_utils.cc.
+Author: chromium-rpi-hevc
+Forwarded: not-needed
+
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -53,6 +53,10 @@
+ #define DRM_FORMAT_MOD_MTK_16L_32S_TILE 0x0b00000000000001
+ #endif
+ 
++#ifndef DRM_FORMAT_MOD_BROADCOM_SAND128
++#define DRM_FORMAT_MOD_BROADCOM_SAND128 0x0700000000000004
++#endif
++
+ namespace {
+ int HandledIoctl(int fd, int request, void* arg) {
+   return HANDLE_EINTR(ioctl(fd, request, arg));
+@@ -247,6 +251,9 @@
+   if (video_fourcc == Fourcc(Fourcc::MM21)) {
+     modifiers = DRM_FORMAT_MOD_MTK_16L_32S_TILE;
+   }
++  if (video_fourcc == Fourcc(Fourcc::NC12)) {
++    modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
++  }
+ #endif
+   const size_t num_buffers = pix_mp.num_planes;
+   const size_t num_color_planes = VideoFrame::NumPlanes(video_format);
+@@ -279,6 +286,26 @@
+     // It is safe to cast to size_t.
+     const size_t y_stride_abs = static_cast<size_t>(y_stride);
+     switch (pix_fmt) {
++#if BUILDFLAG(USE_V4L2_CODEC_RPI)
++#ifndef V4L2_PIX_FMT_NC12
++#define V4L2_PIX_FMT_NC12 v4l2_fourcc('N', 'C', '1', '2')
++#endif
++      case V4L2_PIX_FMT_NC12: {
++        // NC12 is semi-planar with Broadcom SAND128 column-tile layout. The
++        // chroma plane lives at offset (height * 128) within the first
++        // column, NOT at (y_stride * height) -- y_stride here is the
++        // per-column line count reported via bytesperline, not a normal
++        // linear stride.
++        const size_t sand128_chroma_offset =
++            static_cast<size_t>(pix_mp.height) * 128u;
++        const size_t sand128_chroma_size =
++            (static_cast<size_t>(pix_mp.height) / 2u) * 128u;
++        planes.emplace_back(y_stride, sand128_chroma_offset,
++                            sand128_chroma_size);
++        DCHECK_EQ(2u, planes.size());
++        break;
++      }
++#endif
+       case V4L2_PIX_FMT_NV12:
+         // The stride of UV is the same as Y in NV12.
+         // The height is half of Y plane.
+@@ -590,8 +617,11 @@
+ #elif BUILDFLAG(USE_V4L2_CODEC_RPI)
+   // Pi stateful decoder here  current google code doesn't look like it can
+   // cope with multiple devioces
+-  constexpr char kVideoDevicePattern[] = "/dev/video10";
+-  candidate_paths.push_back(kVideoDevicePattern);
++  // Pi 4 stateful H.264 / Pi 5 stateless HEVC decoders — probe both so that
++  // chromium reports HW decode support for all codecs the platform exposes.
++  candidate_paths.push_back("/dev/video10");
++  // Pi 5 BCM2712 rpi-hevc-dec (stateless HEVC).
++  candidate_paths.push_back("/dev/video19");
+ #else
+   constexpr char kVideoDevicePattern[] = "/dev/video";
+   constexpr int kMaxDevices = 256;

@@ -1,3 +1,5 @@
+Description: 0007-gbm-import-gate-fix
+
 --- a/ui/gfx/linux/gbm_wrapper.cc
 +++ b/ui/gfx/linux/gbm_wrapper.cc
 @@ -426,10 +426,16 @@
