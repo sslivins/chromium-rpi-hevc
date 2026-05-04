@@ -101,6 +101,42 @@ fi
 echo "Source tree: $SRC_TREE"
 cd "$SRC_TREE"
 
+echo "=== STAGE 1c: patch debian/rules to drop en-US.pak from chromium-l10n ==="
+# chromium-common.install ships out/Release/resources/en-US.pak into
+# usr/lib/chromium/locales/, while chromium-l10n.install greedily ships the
+# entire out/Release/locales/ tree (which also contains en-US.pak) into the
+# same usr/lib/chromium directory. Upstream debian/rules tries to mitigate
+# this with `rm -f locales/en-US.pak` in override_dh_auto_build-indep, but
+# that fires during the parallel arch build and races: the arch build can
+# rebuild en-US.pak in out/Release/locales/ before dh_install copies it.
+#
+# Robust fix: hook override_dh_install-indep, let dh_install run normally,
+# then delete the stray copy from the chromium-l10n staging dir AFTER it
+# has been populated. No race possible because dh_install is already done.
+#
+# We use a marker comment so re-runs are idempotent. We FAIL LOUD if upstream
+# ever adds its own override_dh_install-indep without our marker — silently
+# skipping would re-introduce the en-US.pak collision in a future release.
+MARKER='# chromium-rpi-hevc: drop duplicate en-US.pak from chromium-l10n staging'
+if grep -qF "$MARKER" debian/rules; then
+    echo "  marker present in debian/rules — fix already applied, skipping."
+elif grep -q '^override_dh_install-indep:' debian/rules; then
+    echo "ERROR: upstream debian/rules has its own override_dh_install-indep" >&2
+    echo "       (without our marker). The en-US.pak fix needs a manual merge" >&2
+    echo "       — refusing to silently lose the fix." >&2
+    exit 1
+else
+    cat >> debian/rules <<EOF
+
+$MARKER
+override_dh_install-indep:
+	dh_install
+	rm -f debian/chromium-l10n/usr/lib/chromium/locales/en-US.pak
+EOF
+    echo "  appended override_dh_install-indep target to debian/rules"
+    tail -6 debian/rules
+fi
+
 echo "=== STAGE 2: existing patch series ==="
 ls debian/patches/series | head
 echo "--- last 5 patches in series ---"
@@ -135,6 +171,32 @@ echo "=== STAGE 5: collect .debs ==="
 cd /build/src
 mv -v *.deb /out/ 2>/dev/null || echo "no .debs in /build/src"
 mv -v *.changes *.buildinfo /out/ 2>/dev/null || true
+
+echo "=== STAGE 6: verify en-US.pak ownership invariant ==="
+# Post-condition assertions for the STAGE 1c fix:
+#   chromium-common owns usr/lib/chromium/locales/en-US.pak
+#   chromium-l10n   does NOT contain it
+# If either assertion fails, the build is broken — fail loud rather than
+# shipping a .deb set that needs --force-overwrite.
+COMMON_DEB=$(ls /out/chromium-common_*.deb 2>/dev/null | head -1 || true)
+L10N_DEB=$(ls /out/chromium-l10n_*.deb 2>/dev/null | head -1 || true)
+if [ -z "$COMMON_DEB" ] || [ -z "$L10N_DEB" ]; then
+    echo "ERROR: chromium-common or chromium-l10n .deb missing in /out — cannot verify." >&2
+    exit 1
+fi
+echo "  chromium-common: $COMMON_DEB"
+echo "  chromium-l10n:   $L10N_DEB"
+if ! dpkg-deb -c "$COMMON_DEB" | grep -q ' \./usr/lib/chromium/locales/en-US\.pak$'; then
+    echo "ERROR: chromium-common is missing usr/lib/chromium/locales/en-US.pak" >&2
+    exit 1
+fi
+echo "  ok: chromium-common contains en-US.pak"
+if dpkg-deb -c "$L10N_DEB" | grep -q ' \./usr/lib/chromium/locales/en-US\.pak$'; then
+    echo "ERROR: chromium-l10n still contains usr/lib/chromium/locales/en-US.pak" >&2
+    echo "       STAGE 1c en-US.pak fix did not take effect." >&2
+    exit 1
+fi
+echo "  ok: chromium-l10n does NOT contain en-US.pak (collision fixed)"
 
 echo "=== DONE ==="
 ls -lh /out/
