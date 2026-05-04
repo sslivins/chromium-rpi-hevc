@@ -1,3 +1,5 @@
+Description: 0002-add-nc12-fourcc
+
 From: HEVC enable on Pi 5
 Subject: [PATCH] Add NC12 (Pi 5 column-tiled NV12) Fourcc mapping
 
