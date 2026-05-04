@@ -49,10 +49,13 @@ jobs:
           fi
 
           # Convert "pios/1%<deb-version>" -> "<deb-version>" and dpkg-sort.
+          # Git tags can't contain '~', so RPi-Distro tags use '_' before deb13u1
+          # (e.g. tag '...-1_deb13u1+rpt1' -> deb version '...-1~deb13u1+rpt1').
           # (dpkg is preinstalled on ubuntu-latest runners.)
           BEST=""
           for tag in "${TAGS[@]}"; do
             ver="${tag#pios/1%}"
+            ver="${ver/_deb13u1/~deb13u1}"
             if [ -z "${BEST}" ] || dpkg --compare-versions "${ver}" gt "${BEST}"; then
               BEST="${ver}"
             fi
@@ -84,7 +87,8 @@ jobs:
             --color B60205 --description "RPi-Distro chromium has a newer tag than we ship" \
             --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
 
-          BEST_URL_VER="${BEST//+/%2B}"
+          BEST_TAG_VER="${BEST/~deb13u1/_deb13u1}"
+          BEST_URL_VER="${BEST_TAG_VER//+/%2B}"
           BODY="$(cat <<EOF
           A newer chromium release is available from RPi-Distro.
 
