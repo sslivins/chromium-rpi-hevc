@@ -77,7 +77,7 @@ The build scripts assume the following bind-mounts inside the
 container. Pick a `$ROOT` with plenty of disk (~80 GB free).
 
 ```bash
-ROOT=$HOME/chromium-rpi-phase4
+ROOT=$HOME/chromium-rpi-hevc-build
 mkdir -p $ROOT/work $ROOT/out
 cp -r patches $ROOT/patches
 ```
@@ -139,9 +139,9 @@ captured at `docs/args.gn.reference`.
 
 ```bash
 # Copy all 5 runtime .debs to the Pi
-scp out/chromium*.deb agora@<pi-ip>:/tmp/
+scp out/chromium*.deb <user>@<pi-ip>:/tmp/
 
-ssh agora@<pi-ip> 'sudo dpkg -i /tmp/chromium*.deb'
+ssh <user>@<pi-ip> 'sudo dpkg -i /tmp/chromium*.deb'
 ```
 
 This installs `/usr/lib/chromium/chromium` and pulls in all support
@@ -152,15 +152,15 @@ warning but both packages still install cleanly and runtime works.
 ### Option B — drop in just the binary (for fast dev iteration)
 
 ```bash
-scp out/chromium agora@<pi-ip>:/tmp/chromium
+scp out/chromium <user>@<pi-ip>:/tmp/chromium
 
 # Push runtime helpers (one-time, or whenever they change)
-scp pi-runtime/launch_hevc.sh agora@<pi-ip>:/tmp/launch_hevc.sh
-scp pi-runtime/sway-hevc.conf agora@<pi-ip>:/tmp/sway-hevc.conf
-scp pi-runtime/run_chromium.sh agora@<pi-ip>:/tmp/run_chromium.sh
-scp pi-runtime/test_hevc_page.html agora@<pi-ip>:/home/agora/composer-proto/test_hevc_page.html
+scp pi-runtime/launch_hevc.sh <user>@<pi-ip>:/tmp/launch_hevc.sh
+scp pi-runtime/sway-hevc.conf <user>@<pi-ip>:/tmp/sway-hevc.conf
+scp pi-runtime/run_chromium.sh <user>@<pi-ip>:/tmp/run_chromium.sh
+scp pi-runtime/test_hevc_page.html <user>@<pi-ip>:/home/<user>/hevc-test/test_hevc_page.html
 
-ssh agora@<pi-ip>
+ssh <user>@<pi-ip>
 sudo systemctl stop hevc-test 2>/dev/null || true
 sudo cp /tmp/chromium /usr/lib/chromium/chromium
 sudo chmod +x /tmp/launch_hevc.sh /tmp/run_chromium.sh
@@ -176,13 +176,13 @@ native gbm import of the V4L2 dmabufs.
 - Raspberry Pi OS / Debian 13 (Trixie) arm64
 - Kernel with `rpi-hevc-dec` (`/dev/video19` present, owned by `video`)
 - Mesa with v3d driver, `DRM_FORMAT_MOD_BROADCOM_SAND128` modifier supported
-- `agora` user with password-less sudo (or adjust paths in `pi-runtime/launch_hevc.sh`)
+- A user with password-less sudo (default `pi` works; adjust paths in `pi-runtime/launch_hevc.sh` if different)
 - A 1920×1080 HEVC test asset (we used a public-domain panda clip)
 
 ## Test snapshot
 
 ```bash
-ssh agora@<pi-ip>
+ssh <user>@<pi-ip>
 WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/tmp/sway-run grim /tmp/screen.png
 scp /tmp/screen.png back-to-host:.
 ```
@@ -197,8 +197,8 @@ scp /tmp/screen.png back-to-host:.
   `debian/rules` packaging logic.
 - `plymouthd --mode=boot` can stay alive past boot and hold
   `/dev/dri/card1`, blocking `cage` from starting on the next reboot.
-  Manual fix: `sudo plymouth quit; sudo pkill -9 plymouthd`. Tracked
-  separately on `sslivins/agora`.
+  Manual fix: `sudo plymouth quit; sudo pkill -9 plymouthd`. This is
+  a Pi-OS / system-level issue, not a Chromium one.
 - Patch 0008 is a diagnostic patch (`LOG(WARNING)` only). It is
   intentionally kept in the series for future picker debugging — it
   can be removed with no behavioural impact.
@@ -241,6 +241,5 @@ chromium-rpi-hevc/
 ## History / context
 
 This work was done over several days against the Pi 5 / Debian
-Trixie target. See PR `sslivins/agora-cms#486` for the original
-issue thread. `docs/chroma-bug.md` documents the SAND128 chroma
+Trixie target. `docs/chroma-bug.md` documents the SAND128 chroma
 offset bug that was fixed in patches 0006 + 0010.

@@ -11,7 +11,7 @@ Description: Re-allocate OUTPUT buffers when V4L2 driver rejects S_FMT
  then reallocate at least as many buffers as we had before.  This is
  a no-op on drivers that already accept S_FMT-after-REQBUFS and is
  narrowly scoped (MMAP only) to avoid touching secure DMABUF paths.
-Author: agora <build@agora>
+Author: chromium-rpi-hevc <build@chromium-rpi-hevc>
 Forwarded: not-needed
 Last-Update: 2026-04-29
 

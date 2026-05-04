@@ -1,7 +1,7 @@
 Description: Diagnostic dump of PickDecoderOutputFormat fourcc matching
  Logs renderable_fourccs_ and candidates so we can see why
  viable_candidate stays null even when NC12 is in both lists.
-Author: agora <build@agora>
+Author: chromium-rpi-hevc <build@chromium-rpi-hevc>
 Forwarded: not-needed
 Last-Update: 2026-05-03
 --- a/media/gpu/chromeos/video_decoder_pipeline.cc

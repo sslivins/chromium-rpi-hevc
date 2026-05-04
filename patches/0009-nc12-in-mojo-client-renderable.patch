@@ -23,7 +23,7 @@ Description: Add NC12 to mojo media client GetPreferredRenderableFourccs (Pi 5)
  .
  Patch 0004 is left in place (harmless; provides correctness for the in-process
  OOP factory path on the off chance we ever route through it).
-Author: agora <build@agora>
+Author: chromium-rpi-hevc <build@chromium-rpi-hevc>
 Forwarded: not-needed
 Last-Update: 2026-05-03
 --- a/media/mojo/services/gpu_mojo_media_client_linux.cc

@@ -18,7 +18,7 @@ Description: Add NC12 to default preferred renderable fourccs (Pi 5 HEVC)
        triage next.
  .
  Either way this advances past the current static block.
-Author: agora <build@agora>
+Author: chromium-rpi-hevc <build@chromium-rpi-hevc>
 Forwarded: not-needed
 Last-Update: 2026-04-30
 

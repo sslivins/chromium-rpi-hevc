@@ -11,5 +11,5 @@ exec /usr/lib/chromium/chromium \
   --disable-zero-copy \
   --disable-gpu-memory-buffer-video-frames \
   --autoplay-policy=no-user-gesture-required \
-  file:///home/agora/composer-proto/test_hevc_page.html \
+  file:///home/pi/hevc-test/test_hevc_page.html \
   >/tmp/chromium-hevc.out 2>/tmp/chromium-hevc.err
