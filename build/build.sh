@@ -5,7 +5,7 @@
 # Outputs: /out/*.deb
 set -euo pipefail
 
-JOBS="${JOBS:-12}"
+JOBS="${JOBS:-$(nproc)}"
 SRC_DIR=/build/src
 mkdir -p "$SRC_DIR"
 cd "$SRC_DIR"
