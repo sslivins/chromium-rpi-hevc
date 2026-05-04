@@ -20,9 +20,13 @@ End-to-end HEVC hardware decode on Raspberry Pi 5 via the upstream
 
 - Upstream package: `chromium 1:147.0.7727.101-1~deb13u1+rpt1`
 - Distribution: Debian Trixie (13) on Raspberry Pi
-- Source obtained via: `apt-get source chromium` from
-  `archive.raspberrypi.com/debian/ trixie main` inside the
-  `chromium-rpi-build` container
+- **Source is pinned and SHA256-verified.** `build.sh` fetches the
+  three source files (`*.orig.tar.xz`, `*.debian.tar.xz`, `*.dsc`)
+  from a frozen mirror published as a GitHub Release on this repo
+  (tag `upstream-source-147.0.7727.101`). The base Docker image is
+  pinned to a specific `debian:trixie` manifest digest. See
+  [`docs/upstream-source-pinning.md`](docs/upstream-source-pinning.md)
+  for details and the bump procedure.
 
 The upstream `chromium` package already carries ~100 patches from
 the Raspberry Pi packaging team — see
@@ -90,9 +94,11 @@ cp -r patches $ROOT/patches
 
 ### First full build (`build.sh`)
 
-This downloads ~3–5 GB of upstream source via `apt-get source`,
-appends `/patches/*.patch` to `debian/patches/series`, and runs the
-full Debian build via `dpkg-buildpackage`. Output is .debs in `/out`.
+This downloads the pinned chromium source (~790 MB compressed) from
+this repo's `upstream-source-147.0.7727.101` GitHub Release and
+SHA256-verifies it, appends `/patches/*.patch` to
+`debian/patches/series`, and runs the full Debian build via
+`dpkg-buildpackage`. Output is .debs in `/out`.
 
 ```bash
 docker run --rm \
@@ -213,8 +219,7 @@ chromium-rpi-hevc/
 ├── build/
 │   ├── Dockerfile
 │   ├── build.sh                # full-build entrypoint
-│   ├── build-fast.sh           # fingerprint-skip incremental
-│   └── build-incremental.sh    # legacy, do not use
+│   └── build-fast.sh           # fingerprint-skip incremental
 ├── patches/                    # quilt-clean, applied by build scripts
 │   ├── 0001-probe-video19-for-hevc.patch
 │   ├── 0002-add-nc12-fourcc.patch
