@@ -1,0 +1,32 @@
+Description: Map NC12 fourcc to BROADCOM_SAND128 dmabuf modifier
+ Pi 5 HEVC decoder (rpi-hevc-dec) outputs frames in NC12 (semi-planar 8-bit)
+ with a SAND128 tiling layout. Without explicit modifier mapping, dmabuf
+ import fails with "Failed to pick an output format". Add the SAND128 macro
+ (not in upstream linux drm_fourcc.h) and emit it as a modifier when the
+ video_fourcc is NC12.
+Author: Sean Slivinski <sslivins@microsoft.com>
+Forwarded: not-needed
+Last-Update: 2026-04-30
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -50,6 +50,10 @@
+ #ifndef DRM_FORMAT_MOD_MTK_16L_32S_TILE
+ #define DRM_FORMAT_MOD_MTK_16L_32S_TILE 0x0b00000000000001
+ #endif
++
++#ifndef DRM_FORMAT_MOD_BROADCOM_SAND128
++#define DRM_FORMAT_MOD_BROADCOM_SAND128 0x0700000000000004
++#endif
+ 
+ namespace {
+ int HandledIoctl(int fd, int request, void* arg) {
+@@ -247,6 +251,9 @@
+   if (video_fourcc == Fourcc(Fourcc::MM21)) {
+     modifiers = DRM_FORMAT_MOD_MTK_16L_32S_TILE;
+   }
++  if (video_fourcc == Fourcc(Fourcc::NC12)) {
++    modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
++  }
+ #endif
+   const size_t num_buffers = pix_mp.num_planes;
+   const size_t num_color_planes = VideoFrame::NumPlanes(video_format);

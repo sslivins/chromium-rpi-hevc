@@ -1,0 +1,40 @@
+Description: Diagnostic dump of PickDecoderOutputFormat fourcc matching
+ Logs renderable_fourccs_ and candidates so we can see why
+ viable_candidate stays null even when NC12 is in both lists.
+Author: agora <build@agora>
+Forwarded: not-needed
+Last-Update: 2026-05-03
+--- a/media/gpu/chromeos/video_decoder_pipeline.cc
++++ b/media/gpu/chromeos/video_decoder_pipeline.cc
+@@ -1117,9 +1117,21 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
+   // don't need an image processor.
+   std::optional<PixelLayoutCandidate> viable_candidate;
+   if (!output_size || *output_size == decoder_visible_rect.size()) {
++    LOG(ERROR) << "[PICKFMT_DIAG] renderable_fourccs_ size="
++               << renderable_fourccs_.size()
++               << " candidates size=" << candidates.size();
++    for (const auto& f : renderable_fourccs_) {
++      LOG(ERROR) << "[PICKFMT_DIAG] renderable: " << f.ToString()
++                 << " v4l2=0x" << std::hex << f.ToV4L2PixFmt() << std::dec;
++    }
++    for (const auto& c : candidates) {
++      LOG(ERROR) << "[PICKFMT_DIAG] candidate: " << c.fourcc.ToString()
++                 << " v4l2=0x" << std::hex << c.fourcc.ToV4L2PixFmt() << std::dec;
++    }
+     for (const auto& fourcc : renderable_fourccs_) {
+       for (const auto& candidate : candidates) {
+         if (candidate.fourcc == fourcc) {
++          LOG(ERROR) << "[PICKFMT_DIAG] HIT: " << fourcc.ToString();
+           viable_candidate = candidate;
+           break;
+         }
+@@ -1127,6 +1139,9 @@ VideoDecoderPipeline::PickDecoderOutputFormat(
+       if (viable_candidate)
+         break;
+     }
++    if (!viable_candidate) {
++      LOG(ERROR) << "[PICKFMT_DIAG] NO MATCH after full scan";
++    }
+   }
+ 
+   // TODO(jkardatzke): Remove this when we have protected content rendering on
