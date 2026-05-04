@@ -1,0 +1,112 @@
+name: upstream-check
+
+# Daily check for newer chromium versions in RPi-Distro/chromium.
+# When a newer tag is found than what we have pinned in build/build.sh
+# we open a tracking issue (one open issue at a time). The issue is the
+# notification mechanism — GitHub will email/web-notify the watcher.
+
+on:
+  schedule:
+    - cron: "17 13 * * *"   # 13:17 UTC daily (~05:17 PT / 06:17 PT)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned version with latest RPi-Distro tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          PINNED="$(grep -E '^CHROMIUM_VERSION_FULL=' build/build.sh \
+                    | head -1 | cut -d'"' -f2)"
+          if [ -z "${PINNED}" ]; then
+            echo "::error::Could not parse CHROMIUM_VERSION_FULL from build/build.sh"
+            exit 1
+          fi
+          echo "Pinned: ${PINNED}"
+
+          # RPi-Distro tags chromium releases as pios/1%<version>
+          # (the '%' substitutes for the ':' epoch separator that git tags reject).
+          # We only consider deb13 (trixie) +rpt tags to match what we ship.
+          mapfile -t TAGS < <(
+            gh api -H "Accept: application/vnd.github+json" \
+              "/repos/RPi-Distro/chromium/tags?per_page=100" \
+              --jq '.[].name' \
+            | grep -E '^pios/1%[0-9].*_deb13u1\+rpt[0-9]+$' || true
+          )
+          if [ "${#TAGS[@]}" -eq 0 ]; then
+            echo "::warning::No matching pios/...deb13u1+rpt tags returned"
+            exit 0
+          fi
+
+          # Convert "pios/1%<deb-version>" -> "<deb-version>" and dpkg-sort.
+          # (dpkg is preinstalled on ubuntu-latest runners.)
+          BEST=""
+          for tag in "${TAGS[@]}"; do
+            ver="${tag#pios/1%}"
+            if [ -z "${BEST}" ] || dpkg --compare-versions "${ver}" gt "${BEST}"; then
+              BEST="${ver}"
+            fi
+          done
+          echo "Latest matching: ${BEST}"
+
+          if dpkg --compare-versions "${BEST}" le "${PINNED}"; then
+            echo "Up to date — nothing to do."
+            exit 0
+          fi
+
+          TITLE="Upstream chromium update available: ${BEST}"
+
+          # Idempotent: if ANY issue (open or closed) with this exact title exists, skip.
+          # If the user closes it without bumping, that's still "I've seen it"; we don't
+          # want to spam a new one every day.
+          EXISTING="$(gh issue list --repo "${GITHUB_REPOSITORY}" \
+                        --state all --label upstream-update \
+                        --json number,title \
+                        --jq ".[] | select(.title == \"${TITLE}\") | .number" \
+                      | head -1 || true)"
+          if [ -n "${EXISTING}" ]; then
+            echo "Tracking issue already exists: #${EXISTING}"
+            exit 0
+          fi
+
+          # Ensure the label exists (ignore "already exists" errors).
+          gh label create upstream-update \
+            --color B60205 --description "RPi-Distro chromium has a newer tag than we ship" \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+
+          BEST_URL_VER="${BEST//+/%2B}"
+          BODY="$(cat <<EOF
+          A newer chromium release is available from RPi-Distro.
+
+          | Source | Version |
+          | --- | --- |
+          | Currently pinned (\`build/build.sh\`) | \`${PINNED}\` |
+          | Latest RPi-Distro \`pios/...+rpt*\` tag | \`${BEST}\` |
+
+          Upstream tag: https://github.com/RPi-Distro/chromium/tree/pios/1%25${BEST_URL_VER}
+
+          ## Suggested workflow
+          1. Bump \`CHROMIUM_VERSION_FULL\` and \`CHROMIUM_VERSION_UPSTREAM\` in \`build/build.sh\`.
+          2. Re-vendor the upstream sources (see \`docs/upstream-source-pinning.md\`) and update the SHA256s.
+          3. Re-apply our patch series; refresh any that fail.
+          4. Build, install on a Pi, verify HEVC playback, cut the next tag.
+
+          _This issue was opened automatically by \`.github/workflows/upstream-check.yml\`._
+          EOF
+          )"
+
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${TITLE}" \
+            --label upstream-update \
+            --body "${BODY}"
