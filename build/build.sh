@@ -22,14 +22,14 @@ cd "$SRC_DIR"
 # vendor the new source files into a new GitHub Release, then update the four
 # constants below. See docs/upstream-source-pinning.md for the full procedure.
 # ---------------------------------------------------------------------------
-CHROMIUM_VERSION_FULL="147.0.7727.101-1~deb13u1+rpt1"
-CHROMIUM_VERSION_UPSTREAM="147.0.7727.101"
-UPSTREAM_RELEASE_URL="${UPSTREAM_RELEASE_URL:-https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-147.0.7727.101}"
+CHROMIUM_VERSION_FULL="147.0.7727.116-1~deb13u1+rpt1"
+CHROMIUM_VERSION_UPSTREAM="147.0.7727.116"
+UPSTREAM_RELEASE_URL="${UPSTREAM_RELEASE_URL:-https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-147.0.7727.116}"
 
 # SHA256 of each source file as published by RPi-Distro and frozen in our release.
-SHA256_ORIG="d4a5f648100232a67b3134a1fa6f6d1d8a07cc4c55b024480073b40c47b2a601"
-SHA256_DEBIAN="6ed6ea4fe608e48747e29496e115d8c18b8c592fe339314fbc2619f4d7040452"
-SHA256_DSC="ab18d58436f692f92da916920443335a038603ce66c75804481fb098474e1455"
+SHA256_ORIG="b808992f5a680372b8276466645183315326d8d0e66f080266883a07f36551c8"
+SHA256_DEBIAN="a884500201313734ea3b185473b867df48c97dedb3915fcbd9b6e0ce411fd318"
+SHA256_DSC="b0ac0f716b8bb04bac2a4c0d793146b456f39bbd3a4dbb1dd5d337704012ea54"
 
 ORIG_TARBALL="chromium_${CHROMIUM_VERSION_UPSTREAM}.orig.tar.xz"
 DEBIAN_TARBALL="chromium_${CHROMIUM_VERSION_FULL}.debian.tar.xz"
