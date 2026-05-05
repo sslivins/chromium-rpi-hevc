@@ -1,0 +1,96 @@
+Description: 0008-hevc-pred-weight-table
+
+Populate the full v4l2_hevc_pred_weight_table forwarded to the
+rpi-hevc-dec kernel driver. Patch 0005 only forwarded the two
+log2_weight_denom fields and zero-initialised everything else, with a
+TODO to revisit when we hit weighted-prediction streams. We have hit
+that: deterministic per-frame corruption is observable on scene fades
+to/from black, where modern encoders emit weighted prediction with
+non-default weights. With our zeros the kernel reconstructs samples as
+(0 * ref + 0) >> denom instead of the real weighted ramp.
+
+Spec ref: H.265 7.4.7.3 (weighted prediction parameters).
+- delta_luma_weight_lX, luma_offset_lX, delta_chroma_weight_lX: forwarded
+  byte-for-byte (signed 8-bit per UAPI).
+- chroma_offset_lX: V4L2 wants the *derived* value (ChromaOffsetLX),
+  not the raw delta. Computed per spec eq. (7-56) assuming 8-bit chroma
+  (BitDepthC=8 -> WpOffsetHalfRangeC=128). 10-bit support will need
+  bit_depth_chroma_minus8 plumbed through; the test stream is 8-bit.
+
+Always populated regardless of slice_type / weighted_pred_flag: when the
+bitstream omits the pred_weight_table syntax, the parser leaves the
+source fields zero-initialized and the derived values come out as
+identity (delta_chroma_weight=0, weight=(1<<denom), offset=0), which is
+benign for the kernel.
+
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+@@ -707,16 +707,61 @@
+   sp.long_term_ref_pic_set_size =
+       static_cast<__u16>(slice_hdr->lt_rps_bits);
+ 
+-  // pred_weight_table: zero-initialised. Will be wrong for streams that
+-  // actually use weighted prediction; revisit when we hit that.
+-  // (Bringup focus: get I/P/B with default weights working first.)
+-  sp.pred_weight_table.luma_log2_weight_denom =
+-      static_cast<__u8>(slice_hdr->pred_weight_table.luma_log2_weight_denom);
+-  sp.pred_weight_table.delta_chroma_log2_weight_denom = static_cast<__s8>(
+-      slice_hdr->pred_weight_table.delta_chroma_log2_weight_denom);
++  // PATCH_0008_HEVC_PRED_WEIGHTS: populate the full pred_weight_table.
++  // V4L2 UAPI wants signed 8-bit deltas for luma/chroma weights and the
++  // *derived* ChromaOffsetLX (HEVC 7.4.7.3), not the raw parsed deltas.
++  {
++    const auto& pwt = slice_hdr->pred_weight_table;
++    sp.pred_weight_table.luma_log2_weight_denom =
++        static_cast<__u8>(pwt.luma_log2_weight_denom);
++    sp.pred_weight_table.delta_chroma_log2_weight_denom =
++        static_cast<__s8>(pwt.delta_chroma_log2_weight_denom);
++
++    const int chroma_log2 = std::max(pwt.chroma_log2_weight_denom, 0);
++    // 8-bit chroma assumption (BitDepthC=8). Plumb bit_depth_chroma_minus8
++    // through when we add 10-bit support.
++    constexpr int kWpOffsetHalfRangeC = 128;  // 1 << (BitDepthC - 1)
++    constexpr int kV4L2HevcMaxRefs = 16;      // V4L2_HEVC_DPB_ENTRIES_NUM_MAX
++    const int n = std::min<int>(kMaxRefIdxActive, kV4L2HevcMaxRefs);
++
++    auto derive_chroma_offset = [chroma_log2](int delta_weight,
++                                              int delta_offset) -> int {
++      const int chroma_weight = (1 << chroma_log2) + delta_weight;
++      const int raw =
++          kWpOffsetHalfRangeC + delta_offset -
++          ((kWpOffsetHalfRangeC * chroma_weight) >> chroma_log2);
++      return std::clamp(raw, -kWpOffsetHalfRangeC, kWpOffsetHalfRangeC - 1);
++    };
++
++    for (int i = 0; i < n; ++i) {
++      sp.pred_weight_table.delta_luma_weight_l0[i] =
++          static_cast<__s8>(pwt.delta_luma_weight_l0[i]);
++      sp.pred_weight_table.luma_offset_l0[i] =
++          static_cast<__s8>(pwt.luma_offset_l0[i]);
++      sp.pred_weight_table.delta_luma_weight_l1[i] =
++          static_cast<__s8>(pwt.delta_luma_weight_l1[i]);
++      sp.pred_weight_table.luma_offset_l1[i] =
++          static_cast<__s8>(pwt.luma_offset_l1[i]);
++      for (int j = 0; j < 2; ++j) {
++        const int dCW0 = pwt.delta_chroma_weight_l0[i][j];
++        const int dCO0 = pwt.delta_chroma_offset_l0[i][j];
++        sp.pred_weight_table.delta_chroma_weight_l0[i][j] =
++            static_cast<__s8>(dCW0);
++        sp.pred_weight_table.chroma_offset_l0[i][j] =
++            static_cast<__s8>(derive_chroma_offset(dCW0, dCO0));
++
++        const int dCW1 = pwt.delta_chroma_weight_l1[i][j];
++        const int dCO1 = pwt.delta_chroma_offset_l1[i][j];
++        sp.pred_weight_table.delta_chroma_weight_l1[i][j] =
++            static_cast<__s8>(dCW1);
++        sp.pred_weight_table.chroma_offset_l1[i][j] =
++            static_cast<__s8>(derive_chroma_offset(dCW1, dCO1));
++      }
++    }
++  }
+ 
+   __u64 flags = 0;
+   if (slice_hdr->slice_sao_luma_flag)
+     flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_LUMA;
+   if (slice_hdr->slice_sao_chroma_flag)
+     flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_CHROMA;
