@@ -186,12 +186,20 @@ if [ -z "$COMMON_DEB" ] || [ -z "$L10N_DEB" ]; then
 fi
 echo "  chromium-common: $COMMON_DEB"
 echo "  chromium-l10n:   $L10N_DEB"
-if ! dpkg-deb -c "$COMMON_DEB" | grep -q ' \./usr/lib/chromium/locales/en-US\.pak$'; then
+# NOTE: capture the listing into a variable rather than piping into `grep -q`.
+# Under `set -o pipefail`, `grep -q` early-exits on the first match, which
+# closes the pipe and makes `dpkg-deb -c` die with SIGPIPE (exit 141).
+# pipefail then surfaces that as a script failure, falsely reporting the
+# invariant as broken even when the .deb is correct. Reading the listing
+# fully into memory eliminates the pipe and the race entirely.
+COMMON_LISTING="$(dpkg-deb -c "$COMMON_DEB")"
+L10N_LISTING="$(dpkg-deb -c "$L10N_DEB")"
+if ! grep -qE ' \./usr/lib/chromium/locales/en-US\.pak$' <<< "$COMMON_LISTING"; then
     echo "ERROR: chromium-common is missing usr/lib/chromium/locales/en-US.pak" >&2
     exit 1
 fi
 echo "  ok: chromium-common contains en-US.pak"
-if dpkg-deb -c "$L10N_DEB" | grep -q ' \./usr/lib/chromium/locales/en-US\.pak$'; then
+if grep -qE ' \./usr/lib/chromium/locales/en-US\.pak$' <<< "$L10N_LISTING"; then
     echo "ERROR: chromium-l10n still contains usr/lib/chromium/locales/en-US.pak" >&2
     echo "       STAGE 1c en-US.pak fix did not take effect." >&2
     exit 1
