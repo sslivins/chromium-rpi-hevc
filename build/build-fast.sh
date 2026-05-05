@@ -59,9 +59,9 @@ ccache -s --verbose | head -20 || ccache -s
 
 # Inject cc_wrapper into args.gn if missing.
 ARGS_GN="out/Release/args.gn"
-if false && [ -f "$ARGS_GN" ] && ! grep -q '^cc_wrapper' "$ARGS_GN"; then
-    echo 'cc_wrapper = \"ccache\"' >> "$ARGS_GN"
-    echo "Added cc_wrapper=\"ccache\" to args.gn"
+if [ -f "$ARGS_GN" ] && ! grep -q '^cc_wrapper' "$ARGS_GN"; then
+    echo 'cc_wrapper = "ccache"' >> "$ARGS_GN"
+    echo 'Added cc_wrapper = "ccache" to args.gn'
     NEED_GN_GEN=1
 else
     NEED_GN_GEN=0
