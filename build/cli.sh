@@ -668,7 +668,11 @@ _cmd_doctor() {
         _log "  FAIL: $PATCHES_DIR missing"; fail=$((fail+1))
     else
         local n; n=$(find "$PATCHES_DIR" -maxdepth 1 -name '*.patch' 2>/dev/null | wc -l)
-        _log "  ok: $PATCHES_DIR present ($n local patches)"
+        if [ "$n" -eq 0 ]; then
+            _log "  WARN: $PATCHES_DIR is empty (full/debs will produce stock RPi chromium with no HEVC patches)"
+        else
+            _log "  ok: $PATCHES_DIR present ($n local patches)"
+        fi
     fi
 
     # 2. ccache writable + version.
