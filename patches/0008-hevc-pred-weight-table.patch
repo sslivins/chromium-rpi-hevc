@@ -13,9 +13,11 @@ Spec ref: H.265 7.4.7.3 (weighted prediction parameters).
 - delta_luma_weight_lX, luma_offset_lX, delta_chroma_weight_lX: forwarded
   byte-for-byte (signed 8-bit per UAPI).
 - chroma_offset_lX: V4L2 wants the *derived* value (ChromaOffsetLX),
-  not the raw delta. Computed per spec eq. (7-56) assuming 8-bit chroma
-  (BitDepthC=8 -> WpOffsetHalfRangeC=128). 10-bit support will need
-  bit_depth_chroma_minus8 plumbed through; the test stream is 8-bit.
+  not the raw delta. Computed per spec eq. (7-56) using BitDepthC derived
+  from sps->bit_depth_chroma_minus8 (so WpOffsetHalfRangeC = 1 << (BitDepthC-1)).
+  For an 8-bit stream this evaluates to 128 - byte-identical to the prior
+  hardcoded value. 10-bit Path A still gated on the kernel-side investigation
+  in docs/phase1-10bit-investigation.md.
 
 Always populated regardless of slice_type / weighted_pred_flag: when the
 bitstream omits the pred_weight_table syntax, the parser leaves the
@@ -25,7 +27,7 @@ benign for the kernel.
 
 --- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
 +++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-@@ -707,16 +707,61 @@
+@@ -707,16 +707,63 @@
    sp.long_term_ref_pic_set_size =
        static_cast<__u16>(slice_hdr->lt_rps_bits);
  
@@ -47,19 +49,21 @@ benign for the kernel.
 +        static_cast<__s8>(pwt.delta_chroma_log2_weight_denom);
 +
 +    const int chroma_log2 = std::max(pwt.chroma_log2_weight_denom, 0);
-+    // 8-bit chroma assumption (BitDepthC=8). Plumb bit_depth_chroma_minus8
-+    // through when we add 10-bit support.
-+    constexpr int kWpOffsetHalfRangeC = 128;  // 1 << (BitDepthC - 1)
++    // WpOffsetHalfRangeC = 1 << (BitDepthC - 1) per HEVC eq. (7-56). For an
++    // 8-bit stream BitDepthC = 8, so this evaluates to 128, byte-identical
++    // to the prior hardcoded value. See docs/phase1-10bit-investigation.md.
++    const int wp_offset_half_range_c = 1 << (sps->bit_depth_chroma_minus8 + 7);
 +    constexpr int kV4L2HevcMaxRefs = 16;      // V4L2_HEVC_DPB_ENTRIES_NUM_MAX
 +    const int n = std::min<int>(kMaxRefIdxActive, kV4L2HevcMaxRefs);
 +
-+    auto derive_chroma_offset = [chroma_log2](int delta_weight,
-+                                              int delta_offset) -> int {
++    auto derive_chroma_offset = [chroma_log2, wp_offset_half_range_c](
++                                    int delta_weight, int delta_offset) -> int {
 +      const int chroma_weight = (1 << chroma_log2) + delta_weight;
 +      const int raw =
-+          kWpOffsetHalfRangeC + delta_offset -
-+          ((kWpOffsetHalfRangeC * chroma_weight) >> chroma_log2);
-+      return std::clamp(raw, -kWpOffsetHalfRangeC, kWpOffsetHalfRangeC - 1);
++          wp_offset_half_range_c + delta_offset -
++          ((wp_offset_half_range_c * chroma_weight) >> chroma_log2);
++      return std::clamp(raw, -wp_offset_half_range_c,
++                        wp_offset_half_range_c - 1);
 +    };
 +
 +    for (int i = 0; i < n; ++i) {
