@@ -1,0 +1,48 @@
+Description: 0010-nc30-stride-derivation
+ Add NC30 (V4L2_PIX_FMT_NV12_10_COL128) case to V4L2FormatToVideoFrameLayout.
+ The column-tile geometry is identical to NC12 (chroma plane at offset
+ height*128 within the first 128-byte column, chroma size = (height/2)*128).
+ The 10-bit sample packing inside each 128-byte column is opaque to chromium
+ and is conveyed to GBM/KMS via the BROADCOM_SAND128 modifier on a 10-bit
+ DRM format downstream.
+ .
+ Also sets DRM_FORMAT_MOD_BROADCOM_SAND128 on the layout for NC30, mirroring
+ the NC12 path.
+
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -254,6 +254,9 @@
+   if (video_fourcc == Fourcc(Fourcc::NC12)) {
+     modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
+   }
++  if (video_fourcc == Fourcc(Fourcc::NC30)) {
++    modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
++  }
+ #endif
+   const size_t num_buffers = pix_mp.num_planes;
+   const size_t num_color_planes = VideoFrame::NumPlanes(video_format);
+@@ -304,6 +307,25 @@
+         DCHECK_EQ(2u, planes.size());
+         break;
+       }
++#ifndef V4L2_PIX_FMT_NC30
++#define V4L2_PIX_FMT_NC30 v4l2_fourcc('N', 'C', '3', '0')
++#endif
++      case V4L2_PIX_FMT_NC30: {
++        // NC30 (V4L2_PIX_FMT_NV12_10_COL128) -- 10-bit semi-planar with
++        // identical SAND128 column-tile geometry to NC12. The 10-bit
++        // sample packing (3 samples per 32 bits) inside each 128-byte
++        // column is opaque to chromium and is handled by GBM/KMS via the
++        // BROADCOM_SAND128 modifier on a 10-bit DRM format downstream.
++        const size_t sand128_chroma_offset =
++            static_cast<size_t>(pix_mp.height) * 128u;
++        const size_t sand128_chroma_size =
++            (static_cast<size_t>(pix_mp.height) / 2u) * 128u;
++        planes.emplace_back(y_stride, sand128_chroma_offset,
++                            sand128_chroma_size);
++        DCHECK_EQ(2u, planes.size());
++        break;
++      }
+ #endif
+       case V4L2_PIX_FMT_NV12:
+         // The stride of UV is the same as Y in NV12.
