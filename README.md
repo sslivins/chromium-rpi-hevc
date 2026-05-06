@@ -6,15 +6,11 @@ End-to-end HEVC hardware decode on Raspberry Pi 5 via the upstream
 
 ## Status
 
-- **Working end-to-end at 1920×1080 Main-profile HEVC.** Hardware
-  decode via `/dev/video19`, NC12 frames imported into Wayland via
-  `BROADCOM_SAND128` dmabuf modifier, displayed by `cage`.
-- **Luma + chroma both correct.** The earlier SAND128 chroma offset
-  bug (vertical magenta/green banding, see `docs/chroma-bug.md`) is
-  fixed in `patches/0006-broadcom-sand128-modifier.patch` +
-  `patches/0010-nc12-stride-derivation.patch`.
-- **Verified runtime:** PICKFMT_DIAG `HIT NC12`, HEVC SPS streaming,
-  no GPU process crashes, no chroma corruption.
+- **Working end-to-end at 1920×1080 Main HEVC** including weighted-prediction scenes
+  (fades, dissolves) which were corrupted in v0.2.0–v0.2.1 and fixed in v0.2.2.
+- Hardware decode via `/dev/video19`. NC12 frames imported into Wayland via the
+  `BROADCOM_SAND128` dmabuf modifier and displayed by `cage`. Luma + chroma both correct.
+- 10-bit (Main 10) and HDR are not yet supported — see issue #14.
 
 ## Source / version pin
 
@@ -35,23 +31,27 @@ the Raspberry Pi packaging team — see
 
 ## What this repo fixes
 
-This work fills the Chromium upstream gaps for stateless HEVC on
-Pi 5:
+The Pi 5 has a stateless V4L2 HEVC decoder (`/dev/video19`,
+`rpi-hevc-dec`) that exposes hardware decode through the standard
+`V4L2_PIX_FMT_HEVC_SLICE` controls. Chromium 147 has the framework to
+talk to a stateless H.265 decoder, but several gaps prevent it from
+finding `/dev/video19`, accepting the column-tiled `NC12` output
+fourcc, importing those frames into Wayland with the
+`BROADCOM_SAND128` modifier, and submitting all the slice parameters
+the kernel needs. The eight patches in `patches/` close those gaps:
 
-| # | Gap | Patch |
-| - | --- | --- |
-| 0001 | Decoder probe didn't try `/dev/video19` for HEVC | `patches/0001-probe-video19-for-hevc.patch` |
-| 0002 | `NC12` fourcc unknown to Chromium | `patches/0002-add-nc12-fourcc.patch` |
-| 0003 | Stateless realloc on `EBUSY` was missing | `patches/0003-stateless-realloc-on-ebusy.patch` |
-| 0004 | `NC12` not in renderable list (Chrome OS path) | `patches/0004-nc12-renderable.patch` |
-| 0005 | H265 delegate didn't submit `V4L2_CID_STATELESS_HEVC_SLICE_PARAMS` (rpi-hevc-dec is slice-based) and `bit_size` was wrong | `patches/0005-h265-slice-params-and-bitsize.patch` |
-| 0006 | NC12 fourcc not mapped to `BROADCOM_SAND128` dmabuf modifier | `patches/0006-broadcom-sand128-modifier.patch` |
-| 0007 | `gbm_bo_import()` blocked by overly-strict `GetSupportedGbmFlags()!=0` gate | `patches/0007-gbm-import-gate-fix.patch` |
-| 0008 | Diagnostic `LOG(WARNING)` traces in `VideoDecoderPipeline::PickDecoderOutputFormat` (kept in series — useful for future picker debugging) | `patches/0008-pickfmt-diag.patch` |
-| 0009 | `NC12` not in renderable list (Linux/`gpu_mojo_media_client_linux.cc` path — what 0004 was trying to be) | `patches/0009-nc12-in-mojo-client-renderable.patch` |
-| 0010 | `V4L2FormatToVideoFrameLayout` couldn't derive NC12 stride / chroma offset arithmetic for SAND128 | `patches/0010-nc12-stride-derivation.patch` |
+| # | Gap closed |
+| - | --- |
+| 0001 | `v4l2_utils.cc` rolled-up Pi 5 fixes: probe `/dev/video19` for HEVC, map NC12 to the `BROADCOM_SAND128` dmabuf modifier, derive correct stride / chroma offset for SAND128-tiled NC12 in `V4L2FormatToVideoFrameLayout`. |
+| 0002 | Register the `NC12` fourcc with Chromium's format tables (was unknown). |
+| 0003 | Re-allocate OUTPUT buffers when the kernel rejects `S_FMT` with `EBUSY` (stateless decoders need this). |
+| 0004 | Add `NC12` to the default preferred renderable fourcc list (the Chrome-OS-flavoured path inside `VideoDecoderPipeline`). |
+| 0005 | Submit `V4L2_CID_STATELESS_HEVC_SLICE_PARAMS` per slice (rpi-hevc-dec is slice-based, not frame-based) and use the correct `bit_size` (`end_off_in_frame * 8`). |
+| 0006 | Weaken an over-strict gate in `gbm_wrapper.cc` so `gbm_bo_import()` can succeed for `BROADCOM_SAND128`. |
+| 0007 | Add `NC12` to `GetPreferredRenderableFourccs` in the Linux mojo media client (the path Chrome actually uses on Pi). |
+| 0008 | Populate the full `v4l2_hevc_pred_weight_table` so the kernel can reconstruct weighted-prediction samples correctly. Without this, scene fades to/from black turn into deterministic per-frame corruption. |
 
-All ten patches under `patches/` are quilt-clean and applied via
+All patches under `patches/` are quilt-clean and applied via
 `dpkg-source --before-build` (they go through
 `debian/patches/local-hevc/`). The build scripts pick them up
 automatically — there is no separate manual apply step.
@@ -196,15 +196,16 @@ scp /tmp/screen.png back-to-host:.
 
 ## Known limitations / next steps
 
-- Tested only at 1920×1080 Main-profile HEVC so far. Other
-  resolutions, Main10, tiles/WPP have not been exercised.
-- `plymouthd --mode=boot` can stay alive past boot and hold
-  `/dev/dri/card1`, blocking `cage` from starting on the next reboot.
-  Manual fix: `sudo plymouth quit; sudo pkill -9 plymouthd`. This is
-  a Pi-OS / system-level issue, not a Chromium one.
-- Patch 0008 is a diagnostic patch (`LOG(WARNING)` only). It is
-  intentionally kept in the series for future picker debugging — it
-  can be removed with no behavioural impact.
+- **No 10-bit / HDR yet.** Current patches handle Main profile (8-bit) only.
+  10-bit (Main 10) and HDR support is tracked in issue #14 with a phased
+  plan: Phase 1 forwards `bit_depth_*_minus8` from the SPS and downconverts
+  to 8-bit on output (SDR); Phase 2 adds full 10-bit pass-through with
+  `V4L2_PIX_FMT_NV12_10_COL128` / `P010` negotiation and a runtime monitor probe.
+- **Tested only at 1920×1080 Main profile.** Other resolutions, tiles, and WPP have not been exercised.
+- **Plymouth can hold `/dev/dri/card1`.** `plymouthd --mode=boot` sometimes stays
+  alive past boot and blocks `cage` from starting on the next reboot. Manual fix:
+  `sudo plymouth quit; sudo pkill -9 plymouthd`. This is a Pi-OS / system-level
+  issue, not a Chromium one.
 
 ## Repo layout
 
@@ -218,16 +219,14 @@ chromium-rpi-hevc/
 │   ├── build.sh                # full-build entrypoint
 │   └── build-fast.sh           # fingerprint-skip incremental
 ├── patches/                    # quilt-clean, applied by build scripts
-│   ├── 0001-probe-video19-for-hevc.patch
+│   ├── 0001-v4l2-utils-pi5.patch
 │   ├── 0002-add-nc12-fourcc.patch
 │   ├── 0003-stateless-realloc-on-ebusy.patch
 │   ├── 0004-nc12-renderable.patch
 │   ├── 0005-h265-slice-params-and-bitsize.patch
-│   ├── 0006-broadcom-sand128-modifier.patch
-│   ├── 0007-gbm-import-gate-fix.patch
-│   ├── 0008-pickfmt-diag.patch
-│   ├── 0009-nc12-in-mojo-client-renderable.patch
-│   └── 0010-nc12-stride-derivation.patch
+│   ├── 0006-gbm-import-gate-fix.patch
+│   ├── 0007-nc12-in-mojo-client-renderable.patch
+│   └── 0008-hevc-pred-weight-table.patch
 ├── pi-runtime/                 # systemd-run target on the Pi
 │   ├── launch_hevc.sh
 │   ├── sway-hevc.conf
@@ -242,6 +241,15 @@ chromium-rpi-hevc/
 
 ## History / context
 
-This work was done over several days against the Pi 5 / Debian
-Trixie target. `docs/chroma-bug.md` documents the SAND128 chroma
-offset bug that was fixed in patches 0006 + 0010.
+The chroma SAND128 bug that produced vertical magenta/green banding
+is documented in `docs/chroma-bug.md`. It was fixed in v0.2.0 by
+deriving the chroma offset from `height * 128` (SAND128 column tile)
+rather than `y_stride * height` (linear NV12). That fix lives in
+`patches/0001-v4l2-utils-pi5.patch` today, alongside the Pi 5
+`/dev/video19` HEVC probe and the `BROADCOM_SAND128` modifier
+mapping (the three were consolidated into a single patch in v0.2.1
+since they all touch `v4l2_utils.cc`).
+
+The weighted-prediction (scene fade) corruption that appeared after
+chroma was solved is documented in patch 0008's commit message and
+in PR #13. It was fixed in v0.2.2.
