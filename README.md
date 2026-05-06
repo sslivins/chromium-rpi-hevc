@@ -51,7 +51,7 @@ for the full list applied **before** any patch in this repo.
 
 ## Build
 
-Source is pinned: `build.sh` fetches the three Debian source files
+Source is pinned: `cli.sh fetch` downloads the three Debian source files
 from this repo's `upstream-source-147.0.7727.116` GitHub Release and
 SHA256-verifies them. See
 [`docs/upstream-source-pinning.md`](docs/upstream-source-pinning.md)
@@ -59,29 +59,50 @@ for details and the bump procedure.
 
 Build runs inside the `chromium-rpi-build` Docker image. Need an arm64
 host with 32+ GB RAM and ~80 GB free disk. First build takes 6–10
-hours; subsequent iterations via `build-fast.sh` are minutes (ccache).
+hours; subsequent iterations via `fast` (skips `dpkg-buildpackage`,
+runs `ninja` directly) are minutes thanks to ccache.
 
 ```bash
 docker build -t chromium-rpi-build build/
 
 ROOT=$HOME/chromium-rpi-hevc-build
 mkdir -p $ROOT/work $ROOT/out
-cp -r patches $ROOT/patches
 
+# Default CMD is `full`: fetch + patch + dpkg-buildpackage.
 docker run --rm \
   -v "$ROOT/work:/build" \
-  -v "$ROOT/patches:/patches:ro" \
+  -v "$PWD/patches:/patches:ro" \
   -v "$ROOT/out:/out" \
-  chromium-rpi-build /build.sh
+  chromium-rpi-build
 ```
 
-Output `.deb`s land in `$ROOT/out/`. For fast patch iteration use
-`build/build-fast.sh` (skips `dpkg-buildpackage`, runs `ninja`
-directly, produces just the binary).
+Output `.deb`s land in `$ROOT/out/`. The image's ENTRYPOINT is
+`/usr/local/bin/chromium-rpi-hevc` (a single uber-script with
+subcommands); pass any subcommand as the docker arg:
 
-> Build-script consolidation and ccache hardening is being tracked
-> separately — current scripts work, but the next iteration will
-> collapse `build.sh` and `build-fast.sh` into a single CLI.
+| Command | What it does |
+| --- | --- |
+| `full`      | fetch + patch + dpkg-buildpackage (full deb build, default) |
+| `fast`      | patch + configure + ninja (fast iteration, no .deb) |
+| `fetch`     | download + verify + extract pinned source only |
+| `patch`     | apply local HEVC patches + en-US.pak fix |
+| `doctor`    | preflight checks; nonzero exit if container is unhealthy |
+| `status`    | print source tree state, stamps, ccache config |
+| `shell`     | drop into a bash shell inside the container |
+| `clean`     | remove source tree + outputs (NOT ccache) |
+
+Useful global flags (must precede the subcommand): `--jobs N`,
+`--no-ccache`, `-v` (shell trace).
+
+```bash
+# fast iteration loop after editing a patch:
+docker run --rm -v "$ROOT/work:/build" -v "$PWD/patches:/patches:ro" \
+  -v "$ROOT/out:/out" chromium-rpi-build fast
+```
+
+Legacy `build/build.sh` and `build/build-fast.sh` are kept as one-line
+exec wrappers for backward compatibility; they will be removed in a
+follow-up cleanup PR.
 
 ## Pi prerequisites
 
@@ -105,7 +126,7 @@ testing — adapt to your setup as needed.
 ## Repo layout
 
 ```
-build/        Dockerfile + build scripts
+build/        Dockerfile + cli.sh (uber CLI) + legacy wrapper scripts
 patches/      quilt-clean HEVC patches
 pi-runtime/   sample compositor + launch scripts for the Pi
 docs/         pinning procedure, upstream patch list, diagnostic notes
