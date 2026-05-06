@@ -17,19 +17,6 @@ FROM debian:trixie@sha256:35b8ff74ead4880f22090b617372daff0ccae742eb5674455d542b
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
-# Belt-and-braces ccache wiring. cc_wrapper="ccache" in args.gn (set by
-# build.sh via debian/rules) is the primary mechanism; this PATH prepend
-# is a backup so any tool that bypasses cc_wrapper still hits ccache.
-# CCACHE_DIR lives under /out so the cache persists via the existing
-# bind mount (-v ${PWD}/out:/out) without requiring a new mount point.
-ENV PATH=/usr/lib/ccache:$PATH
-ENV CCACHE_DIR=/out/.ccache
-ENV CCACHE_MAXSIZE=100G
-ENV CCACHE_COMPRESS=true
-ENV CCACHE_COMPRESSLEVEL=6
-ENV CCACHE_COMPILERCHECK=content
-ENV CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_macro,locale,system_headers
-
 # 1. Add Raspberry Pi archive so we can `apt-get build-dep chromium` and pull
 #    in the same -dev headers RPi-Distro uses. deb-src is required so apt can
 #    read chromium's Build-Depends from RPi's source index. We do NOT use

@@ -48,8 +48,8 @@ SRC_TREE="${TREES[0]}"
 cd "$SRC_TREE"
 
 # ---- ccache setup ----
-export CCACHE_DIR="${CCACHE_DIR:-/out/.ccache}"
-export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-100G}"
+export CCACHE_DIR="${CCACHE_DIR:-/build/.ccache}"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-50G}"
 export CCACHE_COMPILERCHECK=content
 export CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_macro,locale,system_headers
 mkdir -p "$CCACHE_DIR"
