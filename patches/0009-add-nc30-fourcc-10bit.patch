@@ -1,0 +1,135 @@
+Description: Add NC30 (Pi 5 column-tiled P010) Fourcc mapping for 10-bit HEVC
+ Pi 5 rpi-hevc-dec exposes V4L2_PIX_FMT_NV12_10_COL128 (fourcc 'N','C','3','0')
+ on its CAPTURE MPLANE queue when the input stream is 10-bit (HEVC Main 10).
+ .
+ Diagnostic evidence (mpv strace on Pi 192.168.1.114, 2026-05-05):
+ .
+   ioctl(15, VIDIOC_ENUM_FMT, {index=0,
+     description="10-bit Y/CbCr 4:2:0 (128b cols)",
+     pixelformat=v4l2_fourcc('N','C','3','0')}) = 0
+   ioctl(15, VIDIOC_S_FMT, {... pixelformat=NC30,
+     plane_fmt=[{sizeimage=4147200, bytesperline=1620}], num_planes=1}) = 0
+ .
+ ENUM_FMT for 10-bit input lists ONLY NC30 at index 0 (no NV12 fallback).
+ Without NC30 in chromium's recognized fourcc list,
+ V4L2VideoDecoder::SetupOutputFormat() rejects every enumerated CAPTURE
+ format and aborts decode init with "Failed to pick an output format" --
+ chromium falls back to software HEVC decode for 10-bit streams.
+ .
+ This patch mirrors the NC12 plumbing already established by patches
+ 0002 / 0007:
+ .
+   * media/gpu/chromeos/fourcc.{h,cc}: register NC30 as a known
+     single-plane multi-planar fourcc, mapped to PIXEL_FORMAT_P010LE
+     (the 10-bit equivalent of NV12 in chromium's media-layer
+     vocabulary).
+   * media/gpu/chromeos/video_decoder_pipeline.cc:
+     DefaultPreferredRenderableFourccs() -- add NC30 alongside NC12.
+   * media/mojo/services/gpu_mojo_media_client_linux.cc:
+     GetPreferredRenderableFourccs() -- add NC30 at the front for the
+     production renderable-format path.
+ .
+ EXPERIMENTAL / KNOWN INCOMPLETE (same caveats as NC12)
+ NC30 is BCM2712 column-tiled 10-bit YUV in 128-byte-wide column tiles,
+ NOT linear P010. Mapping NC30 -> PIXEL_FORMAT_P010LE lies about the
+ buffer layout to chromium's media-layer code. Likely outcomes at
+ runtime, mirroring the NC12 progression:
+   * DMA-buf import succeeds and visual output is shown (clean or
+     corrupt) -- expected; lets us characterise the next blocker on
+     the 10-bit path.
+   * Or import fails downstream with a specific error -- specific
+     failure point to triage next.
+ .
+ Either way this advances 10-bit HEVC past the current static block.
+ Full SAND128-modifier zero-copy 10-bit will require GPU-side P010
+ column-tiled handling, scoped as a follow-up.
+Author: chromium-rpi-hevc <build@chromium-rpi-hevc>
+Forwarded: not-needed
+Last-Update: 2026-05-05
+
+--- a/media/gpu/chromeos/fourcc.cc
++++ b/media/gpu/chromeos/fourcc.cc
+@@ -36,6 +36,7 @@ std::optional<Fourcc> Fourcc::FromUint32
+     case MT2T:
+     case BGR4:
+     case NC12:
++    case NC30:
+     case AR24:
+     case Q08C:
+     case Q10C:
+@@ -200,6 +201,13 @@ VideoPixelFormat Fourcc::ToVideoPixelFor
+       // memory layout is column-tiled and will need GPU-side SAND128
+       // modifier handling to actually render correctly.
+       return PIXEL_FORMAT_NV12;
++    case NC30:
++      // EXPERIMENTAL: BCM2712 column-tiled 10-bit YUV from rpi-hevc-dec
++      // (V4L2_PIX_FMT_NV12_10_COL128). Reported here as P010LE so the
++      // media layer's bit-depth / stride math accepts it. Underlying
++      // memory layout is column-tiled 10-bit and will need GPU-side
++      // SAND128 modifier handling to actually render correctly.
++      return PIXEL_FORMAT_P010LE;
+     case BGR4:
+     case AR24:
+       return PIXEL_FORMAT_ARGB;
+@@ -302,6 +310,7 @@ std::optional<Fourcc> Fourcc::ToSinglePl
+     case MT2T:
+     case BGR4:
+     case NC12:
++    case NC30:
+     case AR24:
+       return Fourcc(value_);
+     case YM12:
+@@ -339,6 +348,7 @@ bool Fourcc::IsMultiPlanar() const {
+     case MT2T:
+     case BGR4:
+     case NC12:
++    case NC30:
+     case AR24:
+     case Q08C:
+     case Q10C:
+--- a/media/gpu/chromeos/fourcc.h
++++ b/media/gpu/chromeos/fourcc.h
+@@ -112,6 +112,15 @@ class MEDIA_GPU_EXPORT Fourcc {
+     // modifier handling on the importing GPU side.
+     NC12 = ComposeFourcc('N', 'C', '1', '2'),
+ 
++    // EXPERIMENTAL — Pi 5 BCM2712 column-tiled 10-bit YUV
++    // (V4L2_PIX_FMT_NV12_10_COL128). Two-plane 10-bit YUV 4:2:0 in
++    // 128-byte wide column tiles. Produced by /dev/video19
++    // (rpi-hevc-dec) for HEVC Main 10 input. Mapped to
++    // PIXEL_FORMAT_P010LE at the media layer to pass format
++    // selection; this is a probing alias — the underlying buffer is
++    // NOT linear P010 and full zero-copy rendering also requires DRM
++    // modifier DRM_FORMAT_MOD_BROADCOM_SAND128 on the importing GPU
++    // side.
++    NC30 = ComposeFourcc('N', 'C', '3', '0'),
++
+     // V4L2 proprietary format.
+     // https://linuxtv.org/downloads/v4l-dvb-apis-new/userspace-api/v4l/pixfmt-reserved.html
+     // Opaque format that can only be scanned out as an overlay or composited by
+--- a/media/gpu/chromeos/video_decoder_pipeline.cc
++++ b/media/gpu/chromeos/video_decoder_pipeline.cc
+@@ -348,6 +348,9 @@ std::vector<Fourcc> VideoDecoderPipeline
+       // Listed first so it wins over plain NV12 when both are exposed.
+       // See media/gpu/chromeos/fourcc.h NC12 comment for layout caveats.
+       Fourcc(Fourcc::NC12),
++      // EXPERIMENTAL: Pi 5 BCM2712 column-tiled 10-bit (NC30) from
++      // rpi-hevc-dec. See media/gpu/chromeos/fourcc.h NC30 comment.
++      Fourcc(Fourcc::NC30),
+ #endif
+       Fourcc(Fourcc::NV12),
+       Fourcc(Fourcc::P010),
+--- a/media/mojo/services/gpu_mojo_media_client_linux.cc
++++ b/media/mojo/services/gpu_mojo_media_client_linux.cc
+@@ -55,6 +55,11 @@ std::vector<Fourcc> GetPreferredRenderab
+   // "Failed to pick an output format" because its only candidate (NC12)
+   // is not in renderable_fourccs_. See patches/0008-pickfmt-diag.patch.
+   renderable_fourccs.emplace_back(Fourcc::NC12);
++  // EXPERIMENTAL: Pi 5 BCM2712 column-tiled 10-bit (NC30) from
++  // rpi-hevc-dec /dev/video19 for HEVC Main 10 input. Mirror of the
++  // NC12 8-bit path -- without this, 10-bit decode init aborts with
++  // "Failed to pick an output format".
++  renderable_fourccs.emplace_back(Fourcc::NC30);
+ #endif
+ #if BUILDFLAG(ENABLE_VULKAN)
+   // Support for zero-copy NV12/P010 textures preferentially.
