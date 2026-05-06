@@ -137,6 +137,30 @@ EOF
     tail -6 debian/rules
 fi
 
+# ---------------------------------------------------------------------------
+# Inject ccache wrapper into the GN args debian/rules feeds to `gn gen`.
+#
+# debian/rules invokes `gn gen out/Release --args="$(defines)"` from inside
+# override_dh_auto_build-{arch,indep}. `defines` is a Make variable built up
+# by a stack of `defines+=...` lines. We append one more, with our marker so
+# re-runs are idempotent and any future upstream change is detectable.
+#
+# This is part of the Tier 1 incremental-build-fragility fix: stop relying on
+# external PATH tricks that get clobbered when args.gn is regenerated, and
+# stop leaving the wiring up to chance.
+# ---------------------------------------------------------------------------
+CCACHE_MARKER='# chromium-rpi-hevc: enable ccache as cc_wrapper (Tier 1)'
+if grep -qF "$CCACHE_MARKER" debian/rules; then
+    echo "  ccache cc_wrapper marker present in debian/rules — skipping."
+else
+    cat >> debian/rules <<EOF
+
+$CCACHE_MARKER
+defines+=cc_wrapper=\\"ccache\\"
+EOF
+    echo "  appended cc_wrapper=\"ccache\" to defines in debian/rules"
+fi
+
 echo "=== STAGE 2: existing patch series ==="
 ls debian/patches/series | head
 echo "--- last 5 patches in series ---"
@@ -158,13 +182,160 @@ else
     echo "No extra patches in /patches; building stock RPi-Distro source."
 fi
 
+echo "=== STAGE 3b: ccache configuration ==="
+# Tier 1 (incremental-build-fragility plan). Three mechanisms wire ccache:
+#   1. cc_wrapper="ccache" appended to debian/rules `defines` above (primary)
+#   2. PATH=/usr/lib/ccache:$PATH from Dockerfile ENV (backup)
+#   3. Runtime tripwire below — kills the build early if both above fail
+# CCACHE_DIR defaults to /out/.ccache so the cache persists across container
+# runs via the existing -v ${PWD}/out:/out bind mount.
+export CCACHE_DIR="${CCACHE_DIR:-/out/.ccache}"
+mkdir -p "$CCACHE_DIR"
+ccache -o cache_dir="$CCACHE_DIR" \
+       -o max_size=100G \
+       -o compression=true \
+       -o compression_level=6 \
+       -o compiler_check=content \
+       -o sloppiness=time_macros,include_file_mtime,include_file_ctime,file_macro,locale,system_headers \
+       >/dev/null
+ccache --zero-stats >/dev/null
+echo "ccache configuration:"
+ccache --show-config 2>/dev/null | grep -E '^\s*(cache_dir|max_size|compression|compiler_check|sloppiness)\b' || ccache -p 2>/dev/null || true
+echo "PATH: $PATH"
+echo "which clang-19: $(command -v clang-19 || echo MISSING)"
+echo "ccache -V: $(ccache -V 2>/dev/null | head -1)"
+
 echo "=== STAGE 4: dpkg-buildpackage (this is the long part, hours) ==="
 echo "Using $JOBS parallel jobs."
-export DEB_BUILD_OPTIONS="parallel=$JOBS nocheck"
-# -us -uc: no signing
-# -b: binary only
-# -d: don't check build deps (they're already installed)
-dpkg-buildpackage -us -uc -b -d -j"$JOBS" 2>&1 | tee /out/build.log
+# `terse` makes ninja print rule names ("[N/M] CXX obj/...") instead of full
+# command lines, which gives the tripwire a stable signal to count.
+export DEB_BUILD_OPTIONS="parallel=$JOBS nocheck terse"
+
+BUILD_LOG=/out/build.log
+TRIPWIRE_LOG=/out/ccache-tripwire.log
+: > "$BUILD_LOG"
+: > "$TRIPWIRE_LOG"
+
+# Helper: total cacheable calls seen by ccache. Prefers the ccache 4.x
+# machine-readable --print-stats; falls back to parsing -s.
+get_ccache_calls() {
+    local n
+    n=$(ccache --print-stats 2>/dev/null | awk '$1=="called"{print $2; exit}')
+    if [ -n "$n" ]; then
+        echo "$n"
+        return
+    fi
+    ccache -s 2>/dev/null | awk -F: '/[Cc]acheable calls|[Cc]ache hits|[Cc]ache misses/ {gsub(/[^0-9]/,"",$2); s+=$2} END {print s+0}'
+}
+
+# Run dpkg-buildpackage in its own process group so the tripwire can
+# SIGTERM/SIGKILL the entire descendant tree (ninja, clang, etc.) on
+# failure — `kill -TERM $PID` only hits dpkg-buildpackage itself.
+# `set -m` (monitor/job-control mode) places each backgrounded pipeline
+# in its own process group, with PGID == leader PID == $!.
+set -m
+dpkg-buildpackage -us -uc -b -d -j"$JOBS" > "$BUILD_LOG" 2>&1 &
+BUILD_PID=$!
+set +m
+
+# Mirror build.log to stdout in real time. Stops automatically when build exits.
+tail -F -n 0 "$BUILD_LOG" --pid="$BUILD_PID" &
+TAIL_PID=$!
+
+# Tripwire watchdog. Two checks (in priority order):
+#   (a) args.gn assertion: as soon as gn has produced out/Release/args.gn,
+#       grep for cc_wrapper. If missing -> wiring is broken, kill immediately.
+#   (b) compile-stats assertion: once we see >=100 CXX ninja steps, sample
+#       ccache `called`. If 0, wiring is broken (PATH didn't help either),
+#       kill immediately.
+# Wall-clock is informational only — never the sole basis for a kill, since
+# dh_auto_configure (rollup/esbuild/gn gen) can legitimately consume 5-10 min
+# before the first compile.
+(
+    START=$(date +%s)
+    ARGS_CHECKED=0
+    SRC_TREE_ABS="$(pwd)"
+    while kill -0 "$BUILD_PID" 2>/dev/null; do
+        sleep 30
+        kill -0 "$BUILD_PID" 2>/dev/null || break
+        ELAPSED=$(( $(date +%s) - START ))
+
+        # (a) args.gn check — one-shot.
+        if [ "$ARGS_CHECKED" = "0" ]; then
+            ARGS_GN="$SRC_TREE_ABS/out/Release/args.gn"
+            if [ -f "$ARGS_GN" ]; then
+                ARGS_CHECKED=1
+                {
+                    echo "=== args.gn check at T+${ELAPSED}s ==="
+                    cat "$ARGS_GN"
+                } >> "$TRIPWIRE_LOG"
+                if ! grep -q '^cc_wrapper *= *"ccache"' "$ARGS_GN"; then
+                    echo ""
+                    echo "######################################################################"
+                    echo "FATAL: args.gn does NOT contain cc_wrapper=\"ccache\" (T+${ELAPSED}s)."
+                    echo "       defines+= override in debian/rules did not take effect."
+                    echo "       Killing build to save VM time. See $TRIPWIRE_LOG."
+                    echo "######################################################################"
+                    kill -TERM -- "-$BUILD_PID" 2>/dev/null || kill -TERM "$BUILD_PID" 2>/dev/null || true
+                    sleep 5
+                    kill -KILL -- "-$BUILD_PID" 2>/dev/null || kill -KILL "$BUILD_PID" 2>/dev/null || true
+                    exit 0
+                fi
+                echo "ccache tripwire (a): args.gn contains cc_wrapper=\"ccache\" — OK at T+${ELAPSED}s."
+            fi
+        fi
+
+        # (b) compile-stats check.
+        CXX=$(grep -cE '^\[[0-9]+/[0-9]+\] (CXX|CC|RUST_CC|RUST_BIN) ' "$BUILD_LOG" 2>/dev/null || true)
+        CXX=${CXX:-0}
+        if [ "$CXX" -ge 100 ]; then
+            CALLS=$(get_ccache_calls)
+            CALLS=${CALLS:-0}
+            {
+                echo "=== ccache stats check at T+${ELAPSED}s (cxx_actions=$CXX) ==="
+                ccache --print-stats 2>&1 || ccache -s 2>&1
+            } >> "$TRIPWIRE_LOG"
+            if [ "$CALLS" -eq 0 ]; then
+                echo ""
+                echo "######################################################################"
+                echo "FATAL: ccache TRIPWIRE — 0 calls after $CXX CXX actions (T+${ELAPSED}s)."
+                echo "       cc_wrapper wiring is broken AND PATH wrapper is not engaged."
+                echo "       Killing build to save VM time. See $TRIPWIRE_LOG."
+                echo "######################################################################"
+                kill -TERM -- "-$BUILD_PID" 2>/dev/null || kill -TERM "$BUILD_PID" 2>/dev/null || true
+                sleep 5
+                kill -KILL -- "-$BUILD_PID" 2>/dev/null || kill -KILL "$BUILD_PID" 2>/dev/null || true
+                exit 0
+            fi
+            echo "ccache tripwire (b): $CALLS calls observed at $CXX CXX actions — OK. Watchdog disarming."
+            exit 0
+        fi
+
+        # Status heartbeat every 5 minutes for visibility.
+        if [ $((ELAPSED % 300)) -lt 30 ] && [ "$ELAPSED" -ge 300 ]; then
+            CALLS_NOW=$(get_ccache_calls)
+            echo "ccache tripwire heartbeat T+${ELAPSED}s: cxx_actions=$CXX ccache_called=${CALLS_NOW:-?} args_checked=$ARGS_CHECKED"
+        fi
+    done
+) &
+TRIPWIRE_PID=$!
+
+set +e
+wait "$BUILD_PID"
+BUILD_RC=$?
+set -e
+kill "$TRIPWIRE_PID" 2>/dev/null || true
+kill "$TAIL_PID" 2>/dev/null || true
+wait 2>/dev/null || true
+
+echo "=== ccache stats (post-build) ==="
+ccache -s --verbose 2>/dev/null | head -30 || ccache -s
+[ -s "$TRIPWIRE_LOG" ] && { echo "--- tripwire log ---"; cat "$TRIPWIRE_LOG"; }
+
+if [ "$BUILD_RC" -ne 0 ]; then
+    echo "ERROR: dpkg-buildpackage exited $BUILD_RC"
+    exit "$BUILD_RC"
+fi
 
 echo "=== STAGE 5: collect .debs ==="
 # dpkg-buildpackage emits artifacts to the *parent* of the source tree (i.e. /build/src/)
