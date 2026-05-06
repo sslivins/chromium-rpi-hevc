@@ -1,0 +1,43 @@
+Description: EGL Pi5 — remap P010 -> P030 fourcc for native pixmap EGLImage
+ Pair to 0011-gbm-p030-import.patch. Mesa v3d only accepts the BROADCOM
+ SAND128 column-tiled modifier with DRM_FORMAT_P030 (10-bit packed:
+ 3 samples per 32-bit word). Chromium's pipeline only knows kP010 ->
+ DRM_FORMAT_P010, so we already remap the gbm_bo import (0011); we
+ must do the same on the EGL_LINUX_DMA_BUF_EXT path so the
+ EGL_LINUX_DRM_FOURCC_EXT attribute matches what the underlying bo
+ was imported as.
+Author: Steve Slivinski <sslivins@github.com>
+Forwarded: not-needed
+Last-Update: 2026-05-06
+
+--- a/ui/ozone/common/native_pixmap_egl_binding.cc
++++ b/ui/ozone/common/native_pixmap_egl_binding.cc
+@@ -27,6 +27,8 @@
+ #define DRM_FORMAT_R16 FOURCC('R', '1', '6', ' ')
+ #define DRM_FORMAT_GR88 FOURCC('G', 'R', '8', '8')
+ #define DRM_FORMAT_GR1616 FOURCC('G', 'R', '3', '2')
++#define DRM_FORMAT_P010 FOURCC('P', '0', '1', '0')
++#define DRM_FORMAT_P030 FOURCC('P', '0', '3', '0')
+ #define DRM_FORMAT_RGB565 FOURCC('R', 'G', '1', '6')
+ #define DRM_FORMAT_ARGB8888 FOURCC('A', 'R', '2', '4')
+ #define DRM_FORMAT_ABGR8888 FOURCC('A', 'B', '2', '4')
+@@ -104,7 +106,17 @@
+   attrs.push_back(EGL_HEIGHT);
+   attrs.push_back(size_.height());
+   attrs.push_back(EGL_LINUX_DRM_FOURCC_EXT);
+-  attrs.push_back(GetFourCCFormatFromSharedImageFormat(format_));
++  {
++    uint32_t fcc = GetFourCCFormatFromSharedImageFormat(format_);
++    // PATCH_EGL_NC30: Mesa v3d on Pi 5 only accepts BROADCOM SAND128 with
++    // DRM_FORMAT_P030 (10-bit packed). Remap P010 -> P030 here so EGL
++    // matches the gbm_bo we imported with the same remap.
++    uint64_t mod = pixmap->GetFormatModifier();
++    if (fcc == DRM_FORMAT_P010 && (mod >> 56) == 7 /* BROADCOM */) {
++      LOG(WARNING) << "PATCH_EGL_NC30: remapping P010 -> P030 for BROADCOM modifier";
++      fcc = DRM_FORMAT_P030;
++    }
++    attrs.push_back(fcc);
++  }
+ 
+   if (format_ == viz::MultiPlaneFormat::kNV12 ||
+       format_ == viz::MultiPlaneFormat::kYV12 ||
