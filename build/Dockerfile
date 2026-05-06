@@ -4,10 +4,13 @@
 #
 # Usage (from repo root):
 #   docker build -t chromium-rpi-build build/
-#   docker run --rm -it -v ${PWD}/out:/out -v ${PWD}/patches:/patches chromium-rpi-build /build.sh
+#   docker run --rm -it -v ${PWD}/out:/out -v ${PWD}/patches:/patches \
+#       -v ${PWD}/src:/build/src chromium-rpi-build full
 #
-# The image is a "build environment" — all heavy work happens in /build.sh,
-# which downloads the pinned chromium source and builds the .debs.
+# The image is a "build environment" — all heavy work happens in
+# /usr/local/bin/chromium-rpi-hevc (the cli.sh uber-script). Subcommands
+# include: full, fast, fetch, patch, configure, ninja, debs, doctor,
+# status, shell, clean, help. Default CMD is `full`.
 
 # Pinned to the multi-arch manifest digest of debian:trixie at 2026-05-03.
 # This freezes the base userland so an image rebuild produces the same
@@ -18,7 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
 
 # Belt-and-braces ccache wiring. cc_wrapper="ccache" in args.gn (set by
-# build.sh via debian/rules) is the primary mechanism; this PATH prepend
+# cli.sh via debian/rules) is the primary mechanism; this PATH prepend
 # is a backup so any tool that bypasses cc_wrapper still hits ccache.
 # CCACHE_DIR lives under /out so the cache persists via the existing
 # bind mount (-v ${PWD}/out:/out) without requiring a new mount point.
@@ -57,8 +60,14 @@ RUN apt-get update && apt-get build-dep -y chromium \
 RUN mkdir -p /build /out /patches
 WORKDIR /build
 
-# Copy in the build script.
+# Copy in the uber CLI. cli.sh is the single source of truth; build.sh and
+# build-fast.sh are kept as one-line exec wrappers for backward compatibility
+# (will be removed in a follow-up cleanup PR after VM validation).
+COPY cli.sh /usr/local/bin/chromium-rpi-hevc
 COPY build.sh /build.sh
-RUN sed -i 's/\r$//' /build.sh && chmod +x /build.sh
+COPY build-fast.sh /build-fast.sh
+RUN sed -i 's/\r$//' /usr/local/bin/chromium-rpi-hevc /build.sh /build-fast.sh \
+    && chmod +x /usr/local/bin/chromium-rpi-hevc /build.sh /build-fast.sh
 
-CMD ["/build.sh"]
+ENTRYPOINT ["/usr/local/bin/chromium-rpi-hevc"]
+CMD ["full"]
