@@ -21,7 +21,7 @@ Description: 0010-nc30-stride-derivation
  #endif
    const size_t num_buffers = pix_mp.num_planes;
    const size_t num_color_planes = VideoFrame::NumPlanes(video_format);
-@@ -304,6 +307,25 @@
+@@ -305,6 +308,24 @@
          DCHECK_EQ(2u, planes.size());
          break;
        }
