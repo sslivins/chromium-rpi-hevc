@@ -639,7 +639,11 @@ _cmd_debs() {
     fi
     _log "  ok: chromium-l10n does NOT contain en-US.pak (collision fixed)"
 
-    # _debs_cleanup (EXIT trap) handles patch reapply post-condition.
+    # Run cleanup explicitly while locals (build_pid/tail_pid/trip_pid) are
+    # still in scope. _debs_cleanup untraps EXIT/INT/TERM internally so the
+    # trap won't refire on script exit (where set -u would trip on the now-
+    # gone locals — duck #16, observed in v0.2.4 cold full).
+    _debs_cleanup || true
     _step "DONE"
     ls -lh "$OUT_DIR"/
 }
