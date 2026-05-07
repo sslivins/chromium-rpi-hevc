@@ -8,13 +8,15 @@
 # Subcommands:
 #   fetch      Download + verify + extract pinned chromium source.
 #   patch      Apply local /patches/*.patch + en-US.pak fix to debian/rules.
-#   configure  Run make -f debian/rules override_dh_auto_configure-arch (writes args.gn).
+#   configure  Run gn gen out/Release with defines extracted from debian/rules.
 #   ninja      Direct ninja build of out/Release/chrome (fast iteration, no .deb).
 #   debs       Full dpkg-buildpackage producing .debs in /out, then re-applies patches.
 #   full       fetch + patch + debs (matches old build.sh).
 #   fast       patch + configure + ninja (matches old build-fast.sh).
 #   doctor     Preflight checks; exits nonzero if container is unhealthy.
 #   status     Print current state of source tree, stamps, ccache.
+#   logs       List recent cli.sh log files (in /out/.cli-logs/).
+#   tail       tail -F /out/.cli-logs/latest.log.
 #   shell      Drop into a bash shell inside the container.
 #   clean      Remove /build/src/chromium-* and /out/* (NOT ccache).
 #   help       Show this help.
@@ -63,6 +65,7 @@ readonly SHA256_DSC="b0ac0f716b8bb04bac2a4c0d793146b456f39bbd3a4dbb1dd5d33770401
 # grep for them to detect whether the rules-tail has been applied.
 readonly MARKER_EN_US='# chromium-rpi-hevc: drop duplicate en-US.pak from chromium-l10n staging'
 readonly MARKER_CCACHE='# chromium-rpi-hevc: enable ccache as cc_wrapper (Tier 1)'
+readonly MARKER_CONFIGURE_TARGET='# chromium-rpi-hevc: split-out configure target so cli.sh fast can work cold (#29)'
 
 # ---------------------------------------------------------------------------
 # Globals (set by main argv parsing; not user env vars)
@@ -226,6 +229,11 @@ _cmd_fetch() {
     fi
 
     _step "STAGE 1b: extract source via dpkg-source"
+    # A fresh extraction means our patches and rules-tail are NOT yet applied
+    # to the new tree, even though dpkg-source -x will create .pc/applied-
+    # patches for upstream debian/distro patches. Invalidate any surviving
+    # stamps so the next `cli.sh patch` does not false-noop (issue #28).
+    rm -f "$STAMP_PATCH_FP" "$STAMP_RULES_TAIL"
     dpkg-source -x "$dsc"
     local t
     t=$(_find_src_tree) || _die "no chromium-* tree after dpkg-source -x"
@@ -267,6 +275,21 @@ defines+=cc_wrapper=\\"ccache\\"
 EOF
         _log "  appended cc_wrapper=\"ccache\" to defines in debian/rules"
     fi
+    # Custom configure-only target so cli.sh fast can write args.gn without
+    # invoking the full build-arch pipeline (issue #29). The target is named
+    # cli-* (not override_dh_*) so dpkg-buildpackage / dh do NOT call it; only
+    # explicit `make -f debian/rules cli-chromium-rpi-hevc-configure` does.
+    if grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules; then
+        :
+    else
+        # Use unquoted heredoc so $MARKER_CONFIGURE_TARGET expands; escape
+        # $(defines)/$(threads) so they remain literal make variable refs.
+        # The recipe line MUST start with a real TAB (make requires it).
+        printf '\n%s\n' "$MARKER_CONFIGURE_TARGET" >> debian/rules
+        printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure\n' >> debian/rules
+        printf '\tgn gen out/Release --args="$(defines)" --threads="$(threads)"\n' >> debian/rules
+        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules"
+    fi
 }
 
 _apply_patches() {
@@ -283,8 +306,11 @@ _apply_patches() {
     [ -f "$STAMP_PATCH_FP" ] && fp_old=$(cat "$STAMP_PATCH_FP")
     _log "patch state: tree=$tree_state fp_old=${fp_old:-none} fp_new=$fp_new"
 
-    if [ "$tree_state" = "patched" ] && [ "$fp_new" = "$fp_old" ] && [ -f "$STAMP_RULES_TAIL" ]; then
-        _log "patch: tree patched, fp matches, rules-tail applied — noop"
+    if [ "$tree_state" = "patched" ] && [ "$fp_new" = "$fp_old" ] && [ -f "$STAMP_RULES_TAIL" ] \
+       && grep -qF "$MARKER_CCACHE" debian/rules \
+       && grep -qF "$MARKER_EN_US" debian/rules \
+       && grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules; then
+        _log "patch: tree patched, fp matches, rules-tail markers present — noop"
         return 0
     fi
 
@@ -341,13 +367,18 @@ _cmd_patch() { _setup_env; _apply_patches; }
 _cmd_configure() {
     _setup_env
     _setup_ccache
+    # Make sure rules-tail (including our cli-chromium-rpi-hevc-configure
+    # target) is in debian/rules; harmless noop if already applied.
+    _apply_patches
     local src; src=$(_require_src_tree)
     cd "$src"
 
     local args_gn=out/Release/args.gn
 
-    _step "configure: make -f debian/rules override_dh_auto_configure-arch"
-    make -f debian/rules override_dh_auto_configure-arch
+    _step "configure: make -f debian/rules cli-chromium-rpi-hevc-configure"
+    grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules \
+        || _die "configure: $MARKER_CONFIGURE_TARGET not present in debian/rules (rules-tail not applied)"
+    make -f debian/rules cli-chromium-rpi-hevc-configure
 
     [ -f "$args_gn" ] || _die "configure ran but $args_gn missing"
 
@@ -776,6 +807,55 @@ _cmd_clean() {
 _cmd_shell() { _setup_env; _setup_ccache; exec /bin/bash; }
 
 # ---------------------------------------------------------------------------
+# Auto-log — every cli.sh invocation tees stdout+stderr to a timestamped file
+# under /out/.cli-logs/<sub>-<UTC>.log. A `latest.log` symlink always points
+# at the most recent run. Skipped for interactive/read-only subcommands.
+# ---------------------------------------------------------------------------
+_LOG_PATH=""
+
+_setup_autolog() {
+    local sub="$1"
+    case "$sub" in
+        shell|help|logs|tail) return 0 ;;
+    esac
+    local logdir="$OUT_DIR/.cli-logs"
+    mkdir -p "$logdir" 2>/dev/null || return 0
+    local ts; ts=$(date -u +%Y%m%dT%H%M%SZ)
+    local logfile="${sub}-${ts}.log"
+    _LOG_PATH="$logdir/$logfile"
+    ln -sfn "$logfile" "$logdir/latest.log" 2>/dev/null || true
+    # Tee stdout+stderr into the log. Tee survives until pipes close at
+    # script exit; output between the last cli.sh write and SIGTERM may be
+    # lost in pathological cases but the high-level steps are always captured.
+    exec > >(tee -a "$_LOG_PATH") 2>&1
+    printf '=== cli.sh %s @ %s (log: %s) ===\n' "$sub" "$ts" "$_LOG_PATH"
+}
+
+_cmd_logs() {
+    local logdir="$OUT_DIR/.cli-logs"
+    if [ ! -d "$logdir" ]; then
+        _log "no logs in $logdir (no cli.sh build has logged yet)"
+        return 0
+    fi
+    _step "recent cli.sh logs (in $logdir)"
+    # shellcheck disable=SC2012
+    ls -lht "$logdir"/*.log 2>/dev/null | grep -v ' latest\.log$' | head -20 \
+        || _log "no .log files in $logdir"
+    if [ -L "$logdir/latest.log" ]; then
+        _log "latest -> $(readlink "$logdir/latest.log")"
+    fi
+}
+
+_cmd_tail() {
+    local latest="$OUT_DIR/.cli-logs/latest.log"
+    if [ ! -e "$latest" ]; then
+        _die "no latest.log in $OUT_DIR/.cli-logs (run a build first)"
+    fi
+    _log "tailing $latest (Ctrl-C to exit)"
+    exec tail -F "$latest"
+}
+
+# ---------------------------------------------------------------------------
 # Help
 # ---------------------------------------------------------------------------
 _cmd_help() {
@@ -804,6 +884,8 @@ main() {
 
     [ -n "$sub" ] || { _cmd_help; exit 1; }
 
+    _setup_autolog "$sub"
+
     case "$sub" in
         fetch)     _cmd_fetch "$@" ;;
         patch)     _cmd_patch "$@" ;;
@@ -814,6 +896,8 @@ main() {
         fast)      _cmd_fast "$@" ;;
         doctor)    _cmd_doctor "$@" ;;
         status)    _cmd_status "$@" ;;
+        logs)      _cmd_logs "$@" ;;
+        tail)      _cmd_tail "$@" ;;
         clean)     _cmd_clean "$@" ;;
         shell)     _cmd_shell "$@" ;;
         help)      _cmd_help ;;
