@@ -4,10 +4,13 @@
 #
 # Usage (from repo root):
 #   docker build -t chromium-rpi-build build/
-#   docker run --rm -it -v ${PWD}/out:/out -v ${PWD}/patches:/patches chromium-rpi-build /build.sh
+#   docker run --rm -it -v ${PWD}/out:/out -v ${PWD}/patches:/patches \
+#       -v ${PWD}/src:/build/src chromium-rpi-build full
 #
-# The image is a "build environment" — all heavy work happens in /build.sh,
-# which downloads the pinned chromium source and builds the .debs.
+# The image is a "build environment" — all heavy work happens in
+# /usr/local/bin/chromium-rpi-hevc (the cli.sh uber-script). Subcommands
+# include: full, fast, fetch, patch, configure, ninja, debs, doctor,
+# status, shell, clean, help. Default CMD is `full`.
 
 # Pinned to the multi-arch manifest digest of debian:trixie at 2026-05-03.
 # This freezes the base userland so an image rebuild produces the same
@@ -16,6 +19,19 @@ FROM debian:trixie@sha256:35b8ff74ead4880f22090b617372daff0ccae742eb5674455d542b
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8
+
+# Belt-and-braces ccache wiring. cc_wrapper="ccache" in args.gn (set by
+# cli.sh via debian/rules) is the primary mechanism; this PATH prepend
+# is a backup so any tool that bypasses cc_wrapper still hits ccache.
+# CCACHE_DIR lives under /out so the cache persists via the existing
+# bind mount (-v ${PWD}/out:/out) without requiring a new mount point.
+ENV PATH=/usr/lib/ccache:$PATH
+ENV CCACHE_DIR=/out/.ccache
+ENV CCACHE_MAXSIZE=100G
+ENV CCACHE_COMPRESS=true
+ENV CCACHE_COMPRESSLEVEL=6
+ENV CCACHE_COMPILERCHECK=content
+ENV CCACHE_SLOPPINESS=time_macros,include_file_mtime,include_file_ctime,file_macro,locale,system_headers
 
 # 1. Add Raspberry Pi archive so we can `apt-get build-dep chromium` and pull
 #    in the same -dev headers RPi-Distro uses. deb-src is required so apt can
@@ -44,8 +60,14 @@ RUN apt-get update && apt-get build-dep -y chromium \
 RUN mkdir -p /build /out /patches
 WORKDIR /build
 
-# Copy in the build script.
+# Copy in the uber CLI. cli.sh is the single source of truth; build.sh and
+# build-fast.sh are kept as one-line exec wrappers for backward compatibility
+# (will be removed in a follow-up cleanup PR after VM validation).
+COPY cli.sh /usr/local/bin/chromium-rpi-hevc
 COPY build.sh /build.sh
-RUN sed -i 's/\r$//' /build.sh && chmod +x /build.sh
+COPY build-fast.sh /build-fast.sh
+RUN sed -i 's/\r$//' /usr/local/bin/chromium-rpi-hevc /build.sh /build-fast.sh \
+    && chmod +x /usr/local/bin/chromium-rpi-hevc /build.sh /build-fast.sh
 
-CMD ["/build.sh"]
+ENTRYPOINT ["/usr/local/bin/chromium-rpi-hevc"]
+CMD ["full"]
