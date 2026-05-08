@@ -5,13 +5,17 @@ package to enable hardware-accelerated HEVC decode (8-bit and 10-bit /
 Main 10) via the Pi 5's stateless V4L2 decoder (`rpi-hevc-dec` on
 `/dev/video19`).
 
-## Status (v0.2.3)
+## Status (v0.2.6)
 
 - ✅ 8-bit Main HEVC at 1080p — including weighted prediction (fades / dissolves)
 - ✅ 10-bit Main 10 HEVC at 1080p — NC30 / P030 zero-copy import via Mesa v3d
 - ✅ NC12 (8-bit) and NC30 (10-bit) frames imported into Wayland with
   `BROADCOM_SAND128` dmabuf modifier; rendered by `cage` / `sway`
-- ⚠️  HDR metadata is not yet handled (10-bit SDR only)
+- ✅ HDR10 static metadata (mastering display + content light level)
+  forwarded through the V4L2 H.265 plumbing
+- ✅ 4K HEVC: chromium probes the driver's real max via `VIDIOC_TRY_FMT`
+  when `VIDIOC_ENUM_FRAMESIZES` is unimplemented, lifting the legacy
+  1920x1088 default cap (rpi-hevc-dec advertises 4096x4096)
 
 ## Install (prebuilt debs)
 
@@ -27,7 +31,7 @@ not required for normal use).
 
 ## Patches
 
-12 quilt-clean patches in `patches/`, applied automatically by the
+14 quilt-clean patches in `patches/`, applied automatically by the
 build scripts via `debian/patches/local-hevc/`.
 
 | #    | Purpose |
@@ -44,6 +48,8 @@ build scripts via `debian/patches/local-hevc/`.
 | 0010 | NC30 stride derivation in V4L2 stateless decoder |
 | 0011 | GBM `P030` import path for Mesa v3d driver |
 | 0012 | EGL `P030` binding for compositor-side rendering |
+| 0013 | Forward HDR10 static metadata (mastering display + content light level) through the V4L2 H.265 plumbing |
+| 0014 | Probe driver max via `VIDIOC_TRY_FMT` when `VIDIOC_ENUM_FRAMESIZES` is unimplemented (lifts the 1920x1088 cap so 4K HEVC works on rpi-hevc-dec) |
 
 The upstream Raspberry Pi chromium package already carries ~100
 patches — see [`docs/upstream-applied-patches.txt`](docs/upstream-applied-patches.txt)
@@ -116,9 +122,10 @@ testing — adapt to your setup as needed.
 
 ## Known limitations
 
-- HDR metadata not yet handled (10-bit SDR only)
-- Tested at 1080p Main / Main 10. Other resolutions, tiles, and WPP
-  configurations have not been exercised
+- HDR is forwarded as static HDR10 metadata; on an SDR display (no
+  KMS `HDR_OUTPUT_METADATA`) Skia tone-maps PQ -> SDR automatically
+- Validated at 1080p (Main / Main 10) and 4K (Main). Other tiles and
+  WPP configurations have not been exercised
 - Plymouth can hold `/dev/dri/card1` past boot, blocking the
   compositor on next reboot. Workaround: `sudo plymouth quit; sudo pkill -9 plymouthd`
   (Pi-OS issue, not chromium)
