@@ -1,0 +1,47 @@
+Description: probe max coded size via VIDIOC_TRY_FMT when ENUM_FRAMESIZES is unimplemented.
+ Some V4L2 stateless decoders (notably Raspberry Pi 5's `rpi-hevc-dec`)
+ do not implement VIDIOC_ENUM_FRAMESIZES at all. Chromium's existing
+ fallback hard-codes a 1920x1088 cap, which prevents 4K HEVC from ever
+ being added to `supported_configs_` -- 4K clips are then rejected at
+ `media/gpu/chromeos/video_decoder_pipeline.cc` with "Video configuration
+ is not supported", even though the kernel decoder happily accepts a 4K
+ coded size when asked via VIDIOC_TRY_FMT. Probe TRY_FMT with a huge
+ size; the driver clips it to its real maximum (4096x4096 on rpi-hevc-dec).
+ Only override the default if the probe reports a larger value, so any
+ driver that already enumerates correctly, or that returns a smaller
+ max via TRY_FMT, is unaffected.
+Author: chromium-rpi-hevc
+Forwarded: not-needed
+
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -537,7 +537,28 @@
+ #endif
+     }
+   } else {
+-    DLOGF(INFO) << "VIDIOC_ENUM_FRAMESIZES failed, using default values";
++    // Some V4L2 decoders (notably Raspberry Pi 5's rpi-hevc-dec) do not
++    // implement VIDIOC_ENUM_FRAMESIZES. Falling back to the 1920x1088
++    // default would prevent 4K HEVC from ever being marked as a supported
++    // config, even though the driver happily accepts a 4K coded size when
++    // asked via VIDIOC_TRY_FMT. Probe TRY_FMT with a deliberately huge
++    // request; the driver will clip it to its real maximum.
++    DLOGF(INFO) << "VIDIOC_ENUM_FRAMESIZES failed, probing max via TRY_FMT";
++    v4l2_format fmt = {};
++    fmt.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
++    fmt.fmt.pix_mp.pixelformat = pixelformat;
++    fmt.fmt.pix_mp.num_planes = 1;
++    fmt.fmt.pix_mp.width = 8192;
++    fmt.fmt.pix_mp.height = 8192;
++    if (ioctl_cb.Run(VIDIOC_TRY_FMT, &fmt) == kIoctlOk &&
++        static_cast<int>(fmt.fmt.pix_mp.width) > max_resolution->width() &&
++        static_cast<int>(fmt.fmt.pix_mp.height) > max_resolution->height()) {
++      max_resolution->SetSize(fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height);
++      DLOGF(INFO) << "TRY_FMT probe set max to " << fmt.fmt.pix_mp.width
++                  << "x" << fmt.fmt.pix_mp.height;
++    } else {
++      DLOGF(INFO) << "TRY_FMT probe did not increase max; using default";
++    }
+   }
+ }
+ 
