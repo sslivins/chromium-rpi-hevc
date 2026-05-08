@@ -219,7 +219,7 @@
  #include "media/gpu/v4l2/v4l2_vp9_helpers.h"
  
  #include "build/build_config.h"
-@@ -493,6 +494,6 @@
+@@ -493,7 +494,7 @@
  
      const base::TimeDelta timestamp = base::TimeDelta::FromTimeSpec(timespec);
      // TODO(b/214190092): Get color space from the buffer.
@@ -227,3 +227,4 @@
 +    client_->OutputFrame(std::move(frame), *visible_rect_, color_space_, gfx::HDRMetadata{},
                           timestamp);
    }
+ 
