@@ -1,7 +1,7 @@
 name: upstream-check
 
 # Daily check for newer chromium versions in RPi-Distro/chromium.
-# When a newer tag is found than what we have pinned in build/build.sh
+# When a newer tag is found than what we have pinned in build/cli.sh
 # we open a tracking issue (one open issue at a time). The issue is the
 # notification mechanism — GitHub will email/web-notify the watcher.
 
@@ -26,10 +26,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          PINNED="$(grep -E '^CHROMIUM_VERSION_FULL=' build/build.sh \
-                    | head -1 | cut -d'"' -f2)"
+          # build/cli.sh declares this as `readonly CHROMIUM_VERSION_FULL=...`
+          # but accept either form so a future drop of `readonly` doesn't break us.
+          # `|| true` keeps `set -o pipefail` from masking the proper error message
+          # below — without it, a missed match aborts the whole step silently.
+          PINNED="$(grep -E '^(readonly[[:space:]]+)?CHROMIUM_VERSION_FULL=' build/cli.sh \
+                    | head -1 | cut -d'"' -f2 || true)"
           if [ -z "${PINNED}" ]; then
-            echo "::error::Could not parse CHROMIUM_VERSION_FULL from build/build.sh"
+            echo "::error::Could not parse CHROMIUM_VERSION_FULL from build/cli.sh"
             exit 1
           fi
           echo "Pinned: ${PINNED}"
@@ -94,13 +98,13 @@ jobs:
 
           | Source | Version |
           | --- | --- |
-          | Currently pinned (\`build/build.sh\`) | \`${PINNED}\` |
+          | Currently pinned (\`build/cli.sh\`) | \`${PINNED}\` |
           | Latest RPi-Distro \`pios/...+rpt*\` tag | \`${BEST}\` |
 
           Upstream tag: https://github.com/RPi-Distro/chromium/tree/pios/1%25${BEST_URL_VER}
 
           ## Suggested workflow
-          1. Bump \`CHROMIUM_VERSION_FULL\` and \`CHROMIUM_VERSION_UPSTREAM\` in \`build/build.sh\`.
+          1. Bump \`CHROMIUM_VERSION_FULL\` and \`CHROMIUM_VERSION_UPSTREAM\` in \`build/cli.sh\`.
           2. Re-vendor the upstream sources (see \`docs/upstream-source-pinning.md\`) and update the SHA256s.
           3. Re-apply our patch series; refresh any that fail.
           4. Build, install on a Pi, verify HEVC playback, cut the next tag.
