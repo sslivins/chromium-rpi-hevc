@@ -1,0 +1,75 @@
+Description: EGL Pi5 — HEVC multi-plane EGL import diagnostics (debug-only)
+ Patch 0013 (the per-plane modifier hypothesis) was invalidated by runtime
+ logs: every HEVC NV12 import goes through the !plane_index_.has_value()
+ multi-plane branch, never the per-plane branch the old patch fixed. The
+ multi-plane branch already pushes per-plane modifiers correctly, yet the
+ green frame persists with no eglCreateImageKHR error.
+ .
+ This iteration drops the dead per-plane fix and instead instruments the
+ multi-plane import + the eglCreateImageKHR result, so we can see whether:
+   * dma-buf offset/pitch values match SAND128 tiled layout expectations,
+   * MakeScopedEGLImage actually succeeds (no silent EGL error),
+   * the attrs list is the size we expect for n_planes=2 with modifiers.
+ .
+ All additions are LOG(ERROR) markers under the AGORA_DEBUG_0013 prefix.
+ No functional change to chromium's image-import logic.
+Author: Steve Slivinski <sslivins@github.com>
+Forwarded: not-needed
+Last-Update: 2026-05-22
+--- a/ui/ozone/common/native_pixmap_egl_binding.cc	2026-05-22 01:43:32.094299565 +0000
++++ b/ui/ozone/common/native_pixmap_egl_binding.cc	2026-05-22 01:43:32.113887815 +0000
+@@ -96,6 +96,18 @@
+     return false;
+   }
+ 
++  LOG(ERROR) << "AGORA_DEBUG_0013 enter fourcc="
++             << GetFourCCFormatFromSharedImageFormat(format_)
++             << " plane_index="
++             << (plane_index_.has_value()
++                     ? static_cast<int>(plane_index_.value())
++                     : -1)
++             << " n_planes=" << pixmap->GetNumberOfPlanes()
++             << " modifier=0x" << std::hex
++             << pixmap->GetFormatModifier() << std::dec
++             << " ext_has_modifiers="
++             << gl::GLSurfaceEGL::GetGLDisplayEGL()
++                    ->ext->b_EGL_EXT_image_dma_buf_import_modifiers;
+   // Note: If eglCreateImageKHR is successful for a EGL_LINUX_DMA_BUF_EXT
+   // target, the EGL will take a reference to the dma_buf.
+   std::vector<EGLint> attrs;
+@@ -155,6 +167,7 @@
+   }
+ 
+   if (!plane_index_.has_value()) {
++    LOG(ERROR) << "AGORA_DEBUG_0013 multi-plane branch";
+     constexpr auto kPlaneFDAttrs = std::to_array<EGLint>({
+         EGL_DMA_BUF_PLANE0_FD_EXT,
+         EGL_DMA_BUF_PLANE1_FD_EXT,
+@@ -195,6 +208,13 @@
+     CHECK_LE(pixmap->GetNumberOfPlanes(), std::size(kPlaneFDAttrs));
+     for (size_t attrs_plane = 0; attrs_plane < pixmap->GetNumberOfPlanes();
+          ++attrs_plane) {
++      LOG(ERROR) << "AGORA_DEBUG_0013 mp_plane=" << attrs_plane
++                 << " fd=" << pixmap->GetDmaBufFd(attrs_plane)
++                 << " offset=" << pixmap->GetDmaBufOffset(attrs_plane)
++                 << " pitch=" << pixmap->GetDmaBufPitch(attrs_plane)
++                 << " size=" << size_.width() << "x" << size_.height()
++                 << " modifier=0x" << std::hex
++                 << pixmap->GetFormatModifier() << std::dec;
+       attrs.push_back(kPlaneFDAttrs[attrs_plane]);
+       attrs.push_back(pixmap->GetDmaBufFd(attrs_plane));
+       attrs.push_back(kPlaneOffsetAttrs[attrs_plane]);
+@@ -229,6 +249,13 @@
+   egl_image_ =
+       gl::MakeScopedEGLImage(EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+                              static_cast<EGLClientBuffer>(nullptr), &attrs[0]);
++  {
++    EGLint egl_err = eglGetError();
++    LOG(ERROR) << "AGORA_DEBUG_0013 MakeScopedEGLImage="
++               << (egl_image_.get() ? "ok" : "FAILED")
++               << " eglGetError=0x" << std::hex << egl_err << std::dec
++               << " attrs_count=" << attrs.size();
++  }
+   if (!egl_image_.get()) {
+     return false;
+   }
