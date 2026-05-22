@@ -1,0 +1,51 @@
+From: Steve Slivinski <stesli@github.local>
+Subject: [PATCH] ozone: pass format modifier in per-plane EGL_LINUX_DMA_BUF import
+
+The per-plane EGL_LINUX_DMA_BUF import branch (taken when plane_index_
+is set, i.e. when chromium imports NV12 luma as R8 and chroma as GR88
+separately on the Linux V4L2 path) was missing
+EGL_DMA_BUF_PLANE0_MODIFIER_{LO,HI}_EXT. The multi-plane branch above
+already passes them. For LINEAR buffers this is harmless, but for tiled
+formats like DRM_FORMAT_MOD_BROADCOM_SAND128 (Pi5 V4L2 HEVC capture)
+Mesa then interprets the dma-buf as linear and samples garbage, which
+presents as uniform green frames during HEVC playback.
+
+Also LOG the per-plane import attrs so we can verify the modifier is
+making it through at runtime.
+diff --git a/ui/ozone/common/native_pixmap_egl_binding.cc b/ui/ozone/common/native_pixmap_egl_binding.cc
+index 393e892..151bd73 100644
+--- a/ui/ozone/common/native_pixmap_egl_binding.cc
++++ b/ui/ozone/common/native_pixmap_egl_binding.cc
+@@ -223,6 +223,32 @@ bool NativePixmapEGLBinding::InitializeFromNativePixmap(
+     attrs.push_back(pixmap->GetDmaBufOffset(pixmap_plane));
+     attrs.push_back(EGL_DMA_BUF_PLANE0_PITCH_EXT);
+     attrs.push_back(pixmap->GetDmaBufPitch(pixmap_plane));
++
++    // AGORA_PATCH_0017: pass the format modifier in the per-plane EGL
++    // import too. The original upstream code only includes
++    // EGL_DMA_BUF_PLANE0_MODIFIER_{LO,HI}_EXT in the multi-plane branch
++    // above, leaving the per-plane import with no modifier. For LINEAR
++    // buffers that is harmless, but for tiled formats like
++    // DRM_FORMAT_MOD_BROADCOM_SAND128 (Pi5 V4L2 HEVC capture output)
++    // Mesa then treats the dma-buf as linear and samples garbage, which
++    // presents as uniform green frames in HEVC playback.
++    bool has_dma_buf_import_modifier =
++        gl::GLSurfaceEGL::GetGLDisplayEGL()
++            ->ext->b_EGL_EXT_image_dma_buf_import_modifiers;
++    uint64_t modifier = pixmap->GetFormatModifier();
++    if (has_dma_buf_import_modifier &&
++        modifier != gfx::NativePixmapHandle::kNoModifier) {
++      attrs.push_back(EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT);
++      attrs.push_back(modifier & 0xffffffff);
++      attrs.push_back(EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT);
++      attrs.push_back(static_cast<uint32_t>(modifier >> 32));
++    }
++    LOG(WARNING) << "AGORA_PERPLANE_IMPORT plane=" << pixmap_plane
++                 << " fd=" << pixmap->GetDmaBufFd(pixmap_plane)
++                 << " offset=" << pixmap->GetDmaBufOffset(pixmap_plane)
++                 << " pitch=" << pixmap->GetDmaBufPitch(pixmap_plane)
++                 << " mod=0x" << std::hex << modifier << std::dec
++                 << " has_mod_ext=" << has_dma_buf_import_modifier;
+     attrs.push_back(EGL_NONE);
+   }
+ 
