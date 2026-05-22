@@ -833,6 +833,7 @@ _cmd_shell() { _setup_env; _setup_ccache; exec /bin/bash; }
 # at the most recent run. Skipped for interactive/read-only subcommands.
 # ---------------------------------------------------------------------------
 _LOG_PATH=""
+_TEE_PID=""
 
 _setup_autolog() {
     local sub="$1"
@@ -845,11 +846,32 @@ _setup_autolog() {
     local logfile="${sub}-${ts}.log"
     _LOG_PATH="$logdir/$logfile"
     ln -sfn "$logfile" "$logdir/latest.log" 2>/dev/null || true
-    # Tee stdout+stderr into the log. Tee survives until pipes close at
-    # script exit; output between the last cli.sh write and SIGTERM may be
-    # lost in pathological cases but the high-level steps are always captured.
+    # Tee stdout+stderr into the log. We must capture the process-substitution
+    # PID here (right after the exec, while $! still refers to the tee child)
+    # so that _teardown_autolog can wait for it explicitly. Without an
+    # explicit teardown, bash deadlocks at script exit: it retains an open fd
+    # to the write side of the pipe even though stdout/stderr have been
+    # redirected, so tee never sees EOF on its stdin and 'wait' never
+    # returns. See fix in main() below.
     exec > >(tee -a "$_LOG_PATH") 2>&1
+    _TEE_PID=$!
     printf '=== cli.sh %s @ %s (log: %s) ===\n' "$sub" "$ts" "$_LOG_PATH"
+}
+
+# Drain and reap the autolog tee child set up by _setup_autolog. Idempotent;
+# safe to call when autolog was skipped. Must be called AFTER the subcommand
+# dispatch returns (i.e. from main, not from inside an EXIT trap) because
+# subcommands like _cmd_ninja install their own EXIT traps with
+# `trap - EXIT INT TERM` resets that would clobber any trap set in
+# _setup_autolog.
+_teardown_autolog() {
+    [ -n "${_TEE_PID:-}" ] || return 0
+    # Close our copies of fds 1 and 2 (both currently point at the pipe
+    # going to tee). This delivers EOF to tee's stdin so it flushes and
+    # exits. Until those fds close, tee blocks in read() forever.
+    exec 1>&- 2>&-
+    wait "$_TEE_PID" 2>/dev/null || true
+    _TEE_PID=""
 }
 
 _cmd_logs() {
@@ -924,6 +946,9 @@ main() {
         help)      _cmd_help ;;
         *)         _die "unknown subcommand: $sub (try: $0 help)" ;;
     esac
+    local rc=$?
+    _teardown_autolog
+    return $rc
 }
 
 main "$@"
