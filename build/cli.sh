@@ -351,6 +351,27 @@ _apply_patches() {
 
     _log "patch: applying via dpkg-source --before-build"
     dpkg-source --before-build . || _die "patch application failed"
+
+    # Issue #42: keep patches applied across dpkg-buildpackage so iterative
+    # fast builds get ccache hits. By default dpkg-source --after-build
+    # unapplies patches (via quilt pop -af), which our exit trap then has
+    # to reapply, and which the next 'fast' run's _cmd_patch reapplies
+    # again. Each unapply/reapply cycle perturbs source file mtimes and
+    # leaves the tree in a state that isn't byte-identical to the previous
+    # build's, causing ccache to miss on every translation unit (observed:
+    # 0.77% hit rate after a full build had populated the cache).
+    #
+    # debian/source/local-options with `unapply-patches = no` tells
+    # dpkg-source to skip the --after-build unapply, so the tree stays
+    # patched across runs. The exit-trap _apply_patches and next-run
+    # _cmd_patch then short-circuit on the fp-match path.
+    mkdir -p debian/source
+    if ! grep -qF 'unapply-patches = no' debian/source/local-options 2>/dev/null; then
+        printf '%s\n' 'unapply-patches = no' 'abort-on-upstream-changes' \
+            > debian/source/local-options
+        _log "  wrote debian/source/local-options (unapply-patches = no) — see issue #42"
+    fi
+
     printf '%s\n' "$fp_new" > "$STAMP_PATCH_FP"
     _log "patch: applied; stamp updated"
 }
