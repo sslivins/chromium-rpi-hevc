@@ -1,0 +1,93 @@
+Description: 0018-h265-bitsize-payload-only
+ rpi-hevc-dec (Pi-specific HEVC stateless V4L2 driver) checks
+ data_byte_offset + (bit_size in bytes) <= bytesused for each slice.
+ Chromium's pre-existing patch 0005 sets
+   sp.bit_size = end_off_in_frame * 8
+ i.e. the END-of-slice bit offset in the OUTPUT buffer. On the
+ rpt-rpi-2712 6.18.29 kernel this over-reports the payload by
+ data_byte_offset * 8 bits, so the driver rejects every slice with
+   data_byte_offset N + bits B (= X bytes) > bytesused Y
+ (where X == bytesused), skipping the decode and leaving the capture
+ surface all-zero -- the well-known "green frame" symptom.
+ .
+ The correct value (and the meaning aligned with V4L2 stateless HEVC
+ docs and the H.264 buffer layout) is the slice *payload* bits only,
+ i.e. (end_off_in_frame - data_off_in_frame) * 8. Use that
+ unconditionally. A one-shot VIDIOC_G_FMT(CAPTURE_MPLANE) probe is
+ retained purely for diagnostic [HEVC_DBG] logging of the negotiated
+ fourcc; it no longer gates the formula.
+Forwarded: not-needed
+Author: Steve Slivinski <stesli@github.local>
+Last-Update: 2026-05-22
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
+@@ -102,6 +102,11 @@
+   std::vector<int32_t> dpb_poc_map_;
+   // Whether we've explicitly set the START_CODE control for this device yet.
+   bool start_code_control_set_ = false;
++  // PATCH_0018: cache of negotiated CAPTURE-queue pixelformat semantics.
++  // True iff the kernel negotiated V4L2_PIX_FMT_NV12MT_COL128 or _10_COL128,
++  // in which case rpi-hevc-dec uses the non-old_bits bit_size convention.
++  bool capture_format_probed_ = false;
++  bool capture_uses_nv12mt_ = false;
+ };
+ 
+ }  // namespace media
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+@@ -628,6 +628,46 @@
+       slice_off_in_frame + 3 + header_bytes_in_buffer;
+   const size_t end_off_in_frame = slice_off_in_frame + slice_bytes;
+ 
++  // PATCH_0018_HEVC_BITSIZE_BY_CAPTURE_FORMAT: rpi-hevc-dec on 6.18.y
++  // selects bit_size semantics based on the negotiated CAPTURE
++  // pixelformat. NV12_COL128 / NV12_10_COL128 -> old_bits=true (bit_size
++  // is total bits from start-of-buffer); NV12MT_COL128 / NV12MT_10_COL128
++  // -> old_bits=false (bit_size is just the slice payload bits). Probe
++  // once via VIDIOC_G_FMT and cache.
++  if (!capture_format_probed_) {
++    capture_format_probed_ = true;
++    constexpr __u32 kV4L2PixFmtNV12MT_COL128 =
++        (__u32{'N'} << 0) | (__u32{'M'} << 8) |
++        (__u32{'1'} << 16) | (__u32{'2'} << 24);
++    constexpr __u32 kV4L2PixFmtNV12MT_10_COL128 =
++        (__u32{'N'} << 0) | (__u32{'M'} << 8) |
++        (__u32{'3'} << 16) | (__u32{'0'} << 24);
++    struct v4l2_format f;
++    memset(&f, 0, sizeof(f));
++    f.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
++    if (device_->Ioctl(VIDIOC_G_FMT, &f) == 0) {
++      const __u32 pf = f.fmt.pix_mp.pixelformat;
++      capture_uses_nv12mt_ = (pf == kV4L2PixFmtNV12MT_COL128 ||
++                              pf == kV4L2PixFmtNV12MT_10_COL128);
++      VLOG(1) << "[HEVC_DBG] capture pixfmt fourcc=0x" << std::hex
++              << pf << std::dec << " nv12mt=" << capture_uses_nv12mt_
++              << " (selects "
++              << (capture_uses_nv12mt_ ? "new" : "old")
++              << " bit_size semantics)";
++    } else {
++      VPLOGF(1) << "VIDIOC_G_FMT(CAPTURE_MPLANE) failed; assuming "
++                << "NV12_COL128 (old) bit_size semantics";
++    }
++  }
++  // PATCH_0019: empirically on rpt-rpi-2712 6.18.29 the kernel always
++  // interprets bit_size as payload-only bits (= bytes_after_data_off * 8).
++  // Sending end_off*8 (the prior "old_bits=true" assumption) over-reports
++  // by data_off*8 and trips data_byte_offset+bytes>bytesused. Use the
++  // payload-only formula for both fourccs.
++  (void)capture_uses_nv12mt_;
++  const __u32 bit_size_value =
++      static_cast<__u32>((end_off_in_frame - data_off_in_frame) * 8);
++
+   struct v4l2_ctrl_hevc_slice_params sp;
+   memset(&sp, 0, sizeof(sp));
+   // Per rpi-hevc-dec (drivers/media/platform/raspberrypi/hevc_dec/
+@@ -636,7 +676,7 @@
+   // bit_size measures the slice DATA length (from data_byte_offset
+   // to end of slice payload), in bits. Driver tolerates including
+   // rbsp_stop_one_bit byte.
+-  sp.bit_size = static_cast<__u32>(end_off_in_frame * 8);  // PATCH_BITSIZE_FIX
++  sp.bit_size = bit_size_value;  // PATCH_BITSIZE_FIX + PATCH_0018
+   sp.data_byte_offset = static_cast<__u32>(data_off_in_frame);
+   sp.num_entry_point_offsets = 0;  // tiles/wpp not implemented yet
+   sp.nal_unit_type = static_cast<__u8>(slice_hdr->nal_unit_type);
