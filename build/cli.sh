@@ -325,6 +325,21 @@ _apply_patches() {
         return 0
     fi
 
+    # Snapshot mtime+sha for every file that any patch in the OLD series OR
+    # the NEW local set will touch. After the dpkg-source unapply/re-apply
+    # round-trip, restore mtimes for sha-unchanged files. See PR #50: without
+    # this, `quilt pop+push` of an unchanged patch series bumps mtime on every
+    # touched file even though sha is identical, which makes `args.gni` /
+    # `.gn` look newer than `build.ninja.stamp`, forcing `gn gen` to re-run
+    # which rewrites build.ninja with subtly different per-target command
+    # lines (rust crates, protobuf, ...). Ninja then sees ~7,480
+    # CMDLINE_CHANGED + ~19,236 INPUT_NEWER reasons and plans ~50,551 actions
+    # for an "incremental" rebuild. Preserving mtimes keeps args.gni older
+    # than build.ninja.stamp, so gn-gen doesn't re-fire and the cascade is
+    # avoided.
+    _MTIME_PRESERVE_SNAPSHOT=""
+    _mtime_preserve_snapshot
+
     if [ "$tree_state" = "patched" ]; then
         _log "patch: unapplying current patches before reapply"
         dpkg-source --after-build . 2>/dev/null || quilt pop -af 2>/dev/null || true
@@ -363,6 +378,12 @@ _apply_patches() {
     _log "patch: applying via dpkg-source --before-build"
     dpkg-source --before-build . || _die "patch application failed"
 
+    # Restore mtimes for any file whose post-push sha matches pre-pop sha.
+    # Files with genuinely-changed content (sha differs) are left alone so
+    # ninja correctly sees them as dirty.
+    _mtime_preserve_restore "$_MTIME_PRESERVE_SNAPSHOT"
+    unset _MTIME_PRESERVE_SNAPSHOT
+
     # Issue #42: keep patches applied across dpkg-buildpackage so iterative
     # fast builds get ccache hits. By default dpkg-source --after-build
     # unapplies patches (via quilt pop -af), which our exit trap then has
@@ -385,6 +406,68 @@ _apply_patches() {
 
     printf '%s\n' "$fp_new" > "$STAMP_PATCH_FP"
     _log "patch: applied; stamp updated"
+}
+
+# Snapshot mtime+sha for every file that any patch in the current series OR
+# the local /patches/*.patch set is going to touch. Writes the snapshot
+# tempfile path into the global $_MTIME_PRESERVE_SNAPSHOT (avoids capturing
+# _log noise that command substitution would otherwise pull in).
+#
+# Caller must already be cd'd to the chromium source tree.
+_mtime_preserve_snapshot() {
+    local out; out=$(mktemp /tmp/quilt-mtime-XXXXXX.tsv)
+    local files; files=$(mktemp /tmp/quilt-mtime-files-XXXXXX)
+
+    # Existing series patches.
+    if [ -f debian/patches/series ]; then
+        while IFS= read -r p; do
+            [[ "$p" =~ ^[[:space:]]*# ]] && continue
+            [ -z "${p// }" ] && continue
+            local pf="debian/patches/$p"
+            [ -f "$pf" ] || continue
+            lsdiff --strip=1 "$pf" 2>/dev/null | grep -v '^/dev/null$' >> "$files" || true
+        done < debian/patches/series
+    fi
+    # Local patches we're about to install on top.
+    shopt -s nullglob
+    for p in "$PATCHES_DIR"/*.patch; do
+        lsdiff --strip=1 "$p" 2>/dev/null | grep -v '^/dev/null$' >> "$files" || true
+    done
+    shopt -u nullglob
+    sort -u "$files" -o "$files"
+
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        local m s
+        m=$(stat -c '%.Y' "$f" 2>/dev/null) || continue
+        s=$(sha256sum "$f" 2>/dev/null | cut -c1-64) || continue
+        printf '%s\t%s\t%s\n' "$f" "$m" "$s" >> "$out"
+    done < "$files"
+    rm -f "$files"
+
+    _MTIME_PRESERVE_SNAPSHOT="$out"
+    _log "  mtime-preserve: snapshot $(wc -l <"$out" | awk '{print $1}') files → $out"
+}
+
+# Restore mtimes for files whose sha did NOT change across the quilt round-trip.
+# Files with sha changes (genuine patch edits) are left alone.
+_mtime_preserve_restore() {
+    local snap="${1:-}"
+    [ -z "$snap" ] && { _log "  mtime-preserve: no snapshot path, skipping"; return 0; }
+    [ -f "$snap" ] || { _log "  mtime-preserve: snapshot file missing: $snap"; return 0; }
+
+    local restored=0 sha_changed=0 missing=0
+    while IFS=$'\t' read -r f m0 s0; do
+        if [ ! -f "$f" ]; then missing=$((missing+1)); continue; fi
+        local s1; s1=$(sha256sum "$f" 2>/dev/null | cut -c1-64) || { sha_changed=$((sha_changed+1)); continue; }
+        if [ "$s0" = "$s1" ]; then
+            touch -d "@$m0" "$f" 2>/dev/null && restored=$((restored+1)) || sha_changed=$((sha_changed+1))
+        else
+            sha_changed=$((sha_changed+1))
+        fi
+    done < "$snap"
+    _log "  mtime-preserve: restored=$restored sha_changed=$sha_changed missing=$missing"
+    rm -f "$snap"
 }
 
 _cmd_patch() { _setup_env; _apply_patches; }
