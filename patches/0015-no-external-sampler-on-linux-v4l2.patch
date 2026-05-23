@@ -1,0 +1,50 @@
+Description: Disable PrefersExternalSampler on Linux V4L2 decode path
+ .
+ On Raspberry Pi 5 with Linux >= 6.18 the V4L2 stateless HEVC decoder
+ advertises V4L2_PIX_FMT_NV12MT_COL128 (multi-planar SAND128) as the
+ preferred 8-bit output format. When chromium asks Mesa v3d to import
+ such a buffer as a single multi-plane EGLImage with the OES external
+ sampler, it samples as solid green RGB(0,136,0) - the underlying NV12
+ data is never read. mpv works because its dmabuf_interop_gl always
+ splits NV12 buffers into two single-plane EGLImages (R8 for Y, GR88
+ for UV) regardless of single- vs multi-planar V4L2 origin.
+ .
+ PrefersExternalSampler=true is what routes our NV12 frames to that
+ broken single-EGLImage code path in OzoneImageGLTexturesHolder. With
+ the flag false, chromium imports the two V4L2 planes as separate
+ R8 + GR88 GL_TEXTURE_2D textures, matching mpv's working pattern.
+ .
+ The flag is mainly an efficiency hint for ChromeOS - Linux Chromium
+ with V4L2 hwdec is a Pi-only path for us, so unconditionally
+ disabling external sampler on Linux is safe.
+ .
+ References:
+   - https://github.com/sslivins/chromium-rpi-hevc/issues/41
+   - kernel commit raspberrypi/linux@2953bb2d91 (the regression)
+   - https://github.com/mpv-player/mpv/blob/master/video/out/hwdec/dmabuf_interop_gl.c
+Author: Stephen Slivinski <stesli@>
+Last-Update: 2026-05-22
+
+--- a/media/gpu/chromeos/mailbox_video_frame_converter.cc
++++ b/media/gpu/chromeos/mailbox_video_frame_converter.cc
+@@ -249,9 +249,17 @@ MailboxVideoFrameConverter::GenerateSharedImage(
+                            VideoPixelFormatToString(origin_frame->format()));
+     return nullptr;
+   }
+-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
+-  // If format is true multiplanar format, we prefer external sampler on
+-  // ChromeOS and Linux.
++#if BUILDFLAG(IS_CHROMEOS)
++  // If format is true multiplanar format, we prefer external sampler on
++  // ChromeOS.
++  //
++  // PATCH_NO_EXT_SAMPLER_LINUX: do NOT request external sampler on Linux.
++  // On Raspberry Pi 5 (kernel >= 6.18 with V4L2_PIX_FMT_NV12MT_COL128),
++  // importing multi-planar SAND128 buffers as a single multi-plane EGLImage
++  // with an OES sampler renders solid green. Forcing the per-plane path
++  // (R8 + GR88 single-plane EGLImages with GL_TEXTURE_2D) matches mpv's
++  // working dmabuf_interop_gl pattern and is robust across both
++  // NV12_COL128 and NV12MT_COL128 V4L2 outputs.
+   if (si_format->is_multi_plane()) {
+     si_format->SetPrefersExternalSampler();
+   }

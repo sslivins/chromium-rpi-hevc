@@ -11,6 +11,17 @@
 #   configure  Run gn gen out/Release with defines extracted from debian/rules.
 #   ninja      Direct ninja build of out/Release/chrome (fast iteration, no .deb).
 #   debs       Full dpkg-buildpackage producing .debs in /out, then re-applies patches.
+#
+# !!! WARNING !!! Running `debs` (or `full`) WILL BREAK INCREMENTAL BUILDS.
+#   dpkg-buildpackage runs `dpkg-source --after-build` at the end, which
+#   unapplies patches. The cli.sh EXIT trap re-applies them, but the
+#   round-trip changes file mtimes / contents and busts ccache so the
+#   NEXT `ninja` does a cold rebuild of tens of thousands of objects
+#   instead of using the warm out/Release tree.
+#   DO NOT run `debs` until the chromium change actually works under
+#   `ninja` + raw-binary scp to the Pi. Only package once validated.
+#   The function refuses to run unless CHROMIUM_DEBS_CONFIRM=1 is set.
+#
 #   full       fetch + patch + debs (matches old build.sh).
 #   fast       patch + configure + ninja (matches old build-fast.sh).
 #   doctor     Preflight checks; exits nonzero if container is unhealthy.
@@ -595,6 +606,17 @@ _cmd_ninja() {
 #     (duck #6).
 # ---------------------------------------------------------------------------
 _cmd_debs() {
+    # !!! WARNING: this BREAKS the next incremental `ninja` build. !!!
+    # dpkg-source --after-build unapplies patches at end-of-build; the
+    # EXIT-trap re-apply changes mtimes/contents and busts ccache so the
+    # next `ninja` does a cold rebuild of tens of thousands of objects.
+    # ONLY run debs after the change is validated via `ninja` + raw chrome
+    # binary scp to the Pi. See the header WARNING block for details.
+    if [ -z "$CHROMIUM_DEBS_CONFIRM" ]; then
+        echo "REFUSING: set CHROMIUM_DEBS_CONFIRM=1 to run debs (busts incremental build cache)." >&2
+        echo "See header WARNING in cli.sh for why." >&2
+        return 1
+    fi
     _setup_env
     _setup_ccache
 
