@@ -4,24 +4,33 @@ Description: 0018-h265-bitsize-payload-only
  Chromium's pre-existing patch 0005 sets
    sp.bit_size = end_off_in_frame * 8
  i.e. the END-of-slice bit offset in the OUTPUT buffer. On the
- rpt-rpi-2712 6.18.29 kernel this over-reports the payload by
+ rpt-rpi-2712 6.18.y kernel this over-reports the payload by
  data_byte_offset * 8 bits, so the driver rejects every slice with
    data_byte_offset N + bits B (= X bytes) > bytesused Y
  (where X == bytesused), skipping the decode and leaving the capture
  surface all-zero -- the well-known "green frame" symptom.
  .
- The correct value (and the meaning aligned with V4L2 stateless HEVC
- docs and the H.264 buffer layout) is the slice *payload* bits only,
- i.e. (end_off_in_frame - data_off_in_frame) * 8. Use that
- unconditionally. A one-shot VIDIOC_G_FMT(CAPTURE_MPLANE) probe is
- retained purely for diagnostic [HEVC_DBG] logging of the negotiated
- fourcc; it no longer gates the formula.
+ The correct value (per V4L2 stateless HEVC docs / kernel >= 6.15) is
+ the slice *payload* bits only, i.e. (end - data) * 8. But the older
+ 6.12.y rpi-hevc-dec path (Pi5 default kernel until ~5/2026) still
+ expects end_off * 8 ("total" semantics). Both kernels report the
+ SAME CAPTURE fourcc (NV12_COL128 = "NC12"), so fourcc cannot
+ discriminate. Instead, probe VIDIOC_QUERYCAP once and branch on
+ cap.version:
+   >=  KERNEL_VERSION(6,15,0)  -> payload-only (= (end-data)*8)
+   <   KERNEL_VERSION(6,15,0)  -> total       (= end_off*8)
+ .
+ Validated on Pi5 / 6.18.29 (Pi100) and Pi5 / 6.12.75 (Pi114): both
+ play 1080p HEVC cleanly with the SAME chromium binary; chromium picks
+ the right formula at runtime.
 Forwarded: not-needed
 Author: Steve Slivinski <stesli@github.local>
 Last-Update: 2026-05-22
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-@@ -102,6 +102,11 @@
+Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
+===================================================================
+--- chromium-147.0.7727.116.orig/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
++++ chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
+@@ -102,6 +102,11 @@ class V4L2VideoDecoderDelegateH265 : pub
    std::vector<int32_t> dpb_poc_map_;
    // Whether we've explicitly set the START_CODE control for this device yet.
    bool start_code_control_set_ = false;
@@ -33,41 +42,40 @@ Last-Update: 2026-05-22
  };
  
  }  // namespace media
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-@@ -628,6 +628,46 @@
+Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+===================================================================
+--- chromium-147.0.7727.116.orig/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
++++ chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+@@ -628,6 +628,48 @@ H265Decoder::H265Accelerator::Status V4L
        slice_off_in_frame + 3 + header_bytes_in_buffer;
    const size_t end_off_in_frame = slice_off_in_frame + slice_bytes;
  
-+  // PATCH_0018_HEVC_BITSIZE_BY_CAPTURE_FORMAT: rpi-hevc-dec on 6.18.y
-+  // selects bit_size semantics based on the negotiated CAPTURE
-+  // pixelformat. NV12_COL128 / NV12_10_COL128 -> old_bits=true (bit_size
-+  // is total bits from start-of-buffer); NV12MT_COL128 / NV12MT_10_COL128
-+  // -> old_bits=false (bit_size is just the slice payload bits). Probe
-+  // once via VIDIOC_G_FMT and cache.
++  // PATCH_0021_HEVC_BITSIZE_BY_KERNEL_VERSION: rpi-hevc-dec on Pi5
++  // changed bit_size semantics around kernel 6.15. The CAPTURE fourcc
++  // is NV12_COL128 ("NC12") on BOTH 6.12 and 6.18, so it cannot be used
++  // to discriminate. Probe VIDIOC_QUERYCAP and key off cap.version:
++  //   >= KERNEL_VERSION(6,15,0) -> payload-only bit_size (Pi5 6.18.y)
++  //   <  KERNEL_VERSION(6,15,0) -> total end_off*8 (Pi5 6.12.y rpivid path)
 +  if (!capture_format_probed_) {
 +    capture_format_probed_ = true;
-+    constexpr __u32 kV4L2PixFmtNV12MT_COL128 =
-+        (__u32{'N'} << 0) | (__u32{'M'} << 8) |
-+        (__u32{'1'} << 16) | (__u32{'2'} << 24);
-+    constexpr __u32 kV4L2PixFmtNV12MT_10_COL128 =
-+        (__u32{'N'} << 0) | (__u32{'M'} << 8) |
-+        (__u32{'3'} << 16) | (__u32{'0'} << 24);
-+    struct v4l2_format f;
-+    memset(&f, 0, sizeof(f));
-+    f.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-+    if (device_->Ioctl(VIDIOC_G_FMT, &f) == 0) {
-+      const __u32 pf = f.fmt.pix_mp.pixelformat;
-+      capture_uses_nv12mt_ = (pf == kV4L2PixFmtNV12MT_COL128 ||
-+                              pf == kV4L2PixFmtNV12MT_10_COL128);
-+      VLOG(1) << "[HEVC_DBG] capture pixfmt fourcc=0x" << std::hex
-+              << pf << std::dec << " nv12mt=" << capture_uses_nv12mt_
++    constexpr __u32 kBitSizePayloadOnlyMinVersion =
++        (6u << 16) | (15u << 8) | 0u;  // KERNEL_VERSION(6,15,0)
++    struct v4l2_capability cap;
++    memset(&cap, 0, sizeof(cap));
++    if (device_->Ioctl(VIDIOC_QUERYCAP, &cap) == 0) {
++      const __u32 ver = cap.version;
++      capture_uses_nv12mt_ = (ver >= kBitSizePayloadOnlyMinVersion);
++      VLOG(1) << "[HEVC_DBG] driver=" << reinterpret_cast<const char*>(cap.driver)
++              << " version=0x" << std::hex << ver << std::dec
++              << " (" << ((ver >> 16) & 0xff) << "."
++              << ((ver >> 8) & 0xff) << "." << (ver & 0xff) << ")"
++              << " payload_only=" << capture_uses_nv12mt_
 +              << " (selects "
-+              << (capture_uses_nv12mt_ ? "new" : "old")
++              << (capture_uses_nv12mt_ ? "payload-only" : "total")
 +              << " bit_size semantics)";
 +    } else {
-+      VPLOGF(1) << "VIDIOC_G_FMT(CAPTURE_MPLANE) failed; assuming "
-+                << "NV12_COL128 (old) bit_size semantics";
++      VPLOGF(1) << "VIDIOC_QUERYCAP failed; assuming total (old) "
++                << "bit_size semantics";
 +    }
 +  }
 +  // PATCH_0019: empirically on rpt-rpi-2712 6.18.29 the kernel always
@@ -75,14 +83,19 @@ Last-Update: 2026-05-22
 +  // Sending end_off*8 (the prior "old_bits=true" assumption) over-reports
 +  // by data_off*8 and trips data_byte_offset+bytes>bytesused. Use the
 +  // payload-only formula for both fourccs.
-+  (void)capture_uses_nv12mt_;
++  // PATCH_0020: select bit_size formula based on the negotiated CAPTURE
++  // pixfmt cached above. SAND128/NV12MT (Pi5 6.18.y rpi-hevc-dec) wants
++  // payload-only bits = (end - data) * 8. Legacy NV12 (Pi5 6.12.y rpivid
++  // path) wants total bits to end-of-slice = end_off * 8.
 +  const __u32 bit_size_value =
-+      static_cast<__u32>((end_off_in_frame - data_off_in_frame) * 8);
++      capture_uses_nv12mt_
++          ? static_cast<__u32>((end_off_in_frame - data_off_in_frame) * 8)
++          : static_cast<__u32>(end_off_in_frame * 8);
 +
    struct v4l2_ctrl_hevc_slice_params sp;
    memset(&sp, 0, sizeof(sp));
    // Per rpi-hevc-dec (drivers/media/platform/raspberrypi/hevc_dec/
-@@ -636,7 +676,7 @@
+@@ -636,7 +678,7 @@ H265Decoder::H265Accelerator::Status V4L
    // bit_size measures the slice DATA length (from data_byte_offset
    // to end of slice payload), in bits. Driver tolerates including
    // rbsp_stop_one_bit byte.
