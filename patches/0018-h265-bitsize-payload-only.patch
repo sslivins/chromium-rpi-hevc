@@ -1,31 +1,42 @@
-Description: 0018-h265-bitsize-payload-only
+Description: 0018-h265-bitsize-payload-only (narrowed to broken kernel)
  rpi-hevc-dec (Pi-specific HEVC stateless V4L2 driver) checks
  data_byte_offset + (bit_size in bytes) <= bytesused for each slice.
  Chromium's pre-existing patch 0005 sets
    sp.bit_size = end_off_in_frame * 8
- i.e. the END-of-slice bit offset in the OUTPUT buffer. On the
- rpt-rpi-2712 6.18.y kernel this over-reports the payload by
- data_byte_offset * 8 bits, so the driver rejects every slice with
+ i.e. the END-of-slice bit offset in the OUTPUT buffer. That is the
+ long-standing downstream "total" convention and is what every
+ published rpi-hevc-dec expects -- 6.12.y, and 6.18.y at or above
+ rpi-linux commit 7a41407d ("media/hevc_d: Fix old-style bit_size
+ handling support", 2026-05-14) which restores old_bits=true gating
+ for NV12_COL128.
+ .
+ EXACTLY ONE published rpt-rpi-2712 deb regressed against that:
+ linux-image-6.18.29+rpt-rpi-2712. On that build the old_bits=true
+ arm of the kernel switch was inadvertently dropped, so the driver
+ demands payload-only bit_size = (end - data) * 8 and rejects the
+ "total" formula with
    data_byte_offset N + bits B (= X bytes) > bytesused Y
  (where X == bytesused), skipping the decode and leaving the capture
- surface all-zero -- the well-known "green frame" symptom.
+ surface all zero -- the well-known Pi5 6.18 "green frame" symptom.
  .
- The correct value (per V4L2 stateless HEVC docs / kernel >= 6.15) is
- the slice *payload* bits only, i.e. (end - data) * 8. But the older
- 6.12.y rpi-hevc-dec path (Pi5 default kernel until ~5/2026) still
- expects end_off * 8 ("total" semantics). Both kernels report the
- SAME CAPTURE fourcc (NV12_COL128 = "NC12"), so fourcc cannot
- discriminate. Instead, probe VIDIOC_QUERYCAP once and branch on
- cap.version:
-   >=  KERNEL_VERSION(6,15,0)  -> payload-only (= (end-data)*8)
-   <   KERNEL_VERSION(6,15,0)  -> total       (= end_off*8)
+ Both 6.12 and 6.18 negotiate the SAME CAPTURE fourcc (NV12_COL128 =
+ "NC12") so fourcc cannot discriminate. Probe VIDIOC_QUERYCAP once
+ and special-case exactly that one broken kernel:
+   cap.version == KERNEL_VERSION(6,18,29) -> payload-only (= (end-data)*8)
+   anything else                          -> total        (= end_off*8)
+ .
+ This is a narrow transient workaround. Once a new linux-image-*-
+ rpt-rpi-2712 deb (presumably including 7a41407d) ships, the
+ workaround branch will stop matching, the default "total" formula
+ will be sent, and the post-fix kernel will accept it -- after which
+ this patch can be removed.
  .
  Validated on Pi5 / 6.18.29 (Pi100) and Pi5 / 6.12.75 (Pi114): both
  play 1080p HEVC cleanly with the SAME chromium binary; chromium picks
  the right formula at runtime.
 Forwarded: not-needed
 Author: Steve Slivinski <stesli@github.local>
-Last-Update: 2026-05-22
+Last-Update: 2026-05-23
 Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
 ===================================================================
 --- chromium-147.0.7727.116.orig/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
@@ -50,21 +61,21 @@ Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.c
        slice_off_in_frame + 3 + header_bytes_in_buffer;
    const size_t end_off_in_frame = slice_off_in_frame + slice_bytes;
  
-+  // PATCH_0021_HEVC_BITSIZE_BY_KERNEL_VERSION: rpi-hevc-dec on Pi5
-+  // changed bit_size semantics around kernel 6.15. The CAPTURE fourcc
-+  // is NV12_COL128 ("NC12") on BOTH 6.12 and 6.18, so it cannot be used
-+  // to discriminate. Probe VIDIOC_QUERYCAP and key off cap.version:
-+  //   >= KERNEL_VERSION(6,15,0) -> payload-only bit_size (Pi5 6.18.y)
-+  //   <  KERNEL_VERSION(6,15,0) -> total end_off*8 (Pi5 6.12.y rpivid path)
++  // PATCH_0018_HEVC_BITSIZE_BROKEN_KERNEL_WORKAROUND: rpi-hevc-dec on
++  // Pi5 lost its downstream old_bits=true gating for NV12_COL128 in
++  // exactly one published kernel: linux-image-6.18.29+rpt-rpi-2712.
++  // Upstream rpi-linux commit 7a41407d ("media/hevc_d: Fix old-style
++  // bit_size handling support") restores the gating; until that ships
++  // in a deb we send payload-only on the broken kernel only.
 +  if (!capture_format_probed_) {
 +    capture_format_probed_ = true;
 +    constexpr __u32 kBitSizePayloadOnlyMinVersion =
-+        (6u << 16) | (15u << 8) | 0u;  // KERNEL_VERSION(6,15,0)
++        (6u << 16) | (18u << 8) | 29u;  // KERNEL_VERSION(6,18,29)
 +    struct v4l2_capability cap;
 +    memset(&cap, 0, sizeof(cap));
 +    if (device_->Ioctl(VIDIOC_QUERYCAP, &cap) == 0) {
 +      const __u32 ver = cap.version;
-+      capture_uses_nv12mt_ = (ver >= kBitSizePayloadOnlyMinVersion);
++      capture_uses_nv12mt_ = (ver == kBitSizePayloadOnlyMinVersion);
 +      VLOG(1) << "[HEVC_DBG] driver=" << reinterpret_cast<const char*>(cap.driver)
 +              << " version=0x" << std::hex << ver << std::dec
 +              << " (" << ((ver >> 16) & 0xff) << "."
@@ -74,7 +85,7 @@ Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.c
 +              << (capture_uses_nv12mt_ ? "payload-only" : "total")
 +              << " bit_size semantics)";
 +    } else {
-+      VPLOGF(1) << "VIDIOC_QUERYCAP failed; assuming total (old) "
++      VPLOGF(1) << "VIDIOC_QUERYCAP failed; assuming total (default) "
 +                << "bit_size semantics";
 +    }
 +  }
