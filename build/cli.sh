@@ -97,12 +97,12 @@ _die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
 # (dpkg-buildpackage) paths. These match upstream debian/rules expectations.
 # ---------------------------------------------------------------------------
 _setup_env() {
-    export CC=clang-19
-    export CXX=clang++-19
+    export CC=clang-22
+    export CXX=clang++-22
     export AR=ar
     export NM=nm
-    export BUILD_CC=clang-19
-    export BUILD_CXX=clang++-19
+    export BUILD_CC=clang-22
+    export BUILD_CXX=clang++-22
     export BUILD_AR=ar
     export BUILD_NM=nm
     export CXXFLAGS="-stdlib=libc++"
@@ -849,11 +849,11 @@ _cmd_doctor() {
         _log "  FAIL: ccache not installed"; fail=$((fail+1))
     fi
 
-    # 3. clang-19 on PATH.
-    if command -v clang-19 >/dev/null 2>&1; then
-        _log "  ok: clang-19 found ($(command -v clang-19))"
+    # 3. clang-22 on PATH.
+    if command -v clang-22 >/dev/null 2>&1; then
+        _log "  ok: clang-22 found ($(command -v clang-22))"
     else
-        _log "  FAIL: clang-19 missing"; fail=$((fail+1))
+        _log "  FAIL: clang-22 missing"; fail=$((fail+1))
     fi
 
     # 4. Source tree presence (informational unless we want to be strict).
