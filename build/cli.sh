@@ -702,7 +702,7 @@ _cmd_debs() {
     # next `ninja` does a cold rebuild of tens of thousands of objects.
     # ONLY run debs after the change is validated via `ninja` + raw chrome
     # binary scp to the Pi. See the header WARNING block for details.
-    if [ -z "$CHROMIUM_DEBS_CONFIRM" ]; then
+    if [ -z "${CHROMIUM_DEBS_CONFIRM:-}" ]; then
         echo "REFUSING: set CHROMIUM_DEBS_CONFIRM=1 to run debs (busts incremental build cache)." >&2
         echo "See header WARNING in cli.sh for why." >&2
         return 1
