@@ -1,9 +1,15 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:147.0.7727.116-1~deb13u1+rpt1`. The patches under
-`patches/` were written and tested against this exact source tree;
-applying them to a different version is not guaranteed to work.
+version: `1:151.0.7922.173-1~deb13u1+rpt1`. The patches under
+`patches/` were rebased and reviewed against Chromium
+151.0.7922.137 (git tag `151.0.7922.137` on
+chromium.googlesource.com); the vendored/pinned build source is the
+next RPi-Distro `+rpt1` trixie release available at the time of
+vendoring, 151.0.7922.173. These are both within the 151.0.7922.x
+patch train, so no further source-level drift is expected between
+them, but this has not been build-verified — if `cli.sh patch` fails
+on a hunk, check whether upstream changed between .137 and .173 first.
 
 This document explains how the pin works, why it exists, and how to
 move it forward when the time comes.
