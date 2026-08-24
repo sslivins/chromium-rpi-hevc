@@ -25,7 +25,7 @@ benign for the kernel.
 
 --- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
 +++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-@@ -707,16 +707,61 @@
+@@ -702,13 +702,58 @@ H265Decoder::H265Accelerator::Status V4L2VideoDecoderDelegateH265::SubmitSlice(
    sp.long_term_ref_pic_set_size =
        static_cast<__u16>(slice_hdr->lt_rps_bits);
  
@@ -91,6 +91,3 @@ benign for the kernel.
  
    __u64 flags = 0;
    if (slice_hdr->slice_sao_luma_flag)
-     flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_LUMA;
-   if (slice_hdr->slice_sao_chroma_flag)
-     flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_CHROMA;

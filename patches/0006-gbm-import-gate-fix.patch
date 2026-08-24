@@ -2,7 +2,7 @@ Description: 0007-gbm-import-gate-fix
 
 --- a/ui/gfx/linux/gbm_wrapper.cc
 +++ b/ui/gfx/linux/gbm_wrapper.cc
-@@ -426,10 +426,16 @@
+@@ -426,10 +426,16 @@ class Device final : public ui::GbmDevice {
        return nullptr;
      }
  
@@ -23,7 +23,7 @@ Description: 0007-gbm-import-gate-fix
      }
  
      struct gbm_import_fd_modifier_data fd_data;
-@@ -448,14 +454,39 @@
+@@ -452,14 +458,39 @@ class Device final : public ui::GbmDevice {
        UNSAFE_TODO(fd_data.offsets[i]) = handle.planes[i].offset;
      }
  
@@ -64,7 +64,7 @@ Description: 0007-gbm-import-gate-fix
  
      return std::make_unique<Buffer>(bo, format, gbm_flags, handle.modifier,
                                      size, std::move(handle));
-@@ -471,7 +502,7 @@
+@@ -475,7 +506,7 @@ class Device final : public ui::GbmDevice {
      if (gbm_device_is_format_supported(device_.get(), format, gbm_flags)) {
        return gbm_flags;
      }

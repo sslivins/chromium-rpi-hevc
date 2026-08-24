@@ -24,7 +24,7 @@ Last-Update: 2026-04-30
 
 --- a/media/gpu/chromeos/video_decoder_pipeline.cc
 +++ b/media/gpu/chromeos/video_decoder_pipeline.cc
-@@ -343,6 +343,12 @@ std::vector<Fourcc> VideoDecoderPipeline::DefaultPreferredRenderableFourccs() {
+@@ -344,6 +344,12 @@ std::vector<Fourcc> VideoDecoderPipeline::DefaultPreferredRenderableFourccs() {
    // Preferred output formats in order of preference.
    // TODO(mcasas): query the platform for its preferred formats and modifiers.
    return {

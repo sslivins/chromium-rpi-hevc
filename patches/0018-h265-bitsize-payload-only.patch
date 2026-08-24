@@ -37,27 +37,9 @@ Description: 0018-h265-bitsize-payload-only (narrowed to broken kernel)
 Forwarded: not-needed
 Author: Steve Slivinski <stesli@github.local>
 Last-Update: 2026-05-23
-Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-===================================================================
---- chromium-147.0.7727.116.orig/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-+++ chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-@@ -102,6 +102,11 @@ class V4L2VideoDecoderDelegateH265 : pub
-   std::vector<int32_t> dpb_poc_map_;
-   // Whether we've explicitly set the START_CODE control for this device yet.
-   bool start_code_control_set_ = false;
-+  // PATCH_0018: cache of negotiated CAPTURE-queue pixelformat semantics.
-+  // True iff the kernel negotiated V4L2_PIX_FMT_NV12MT_COL128 or _10_COL128,
-+  // in which case rpi-hevc-dec uses the non-old_bits bit_size convention.
-+  bool capture_format_probed_ = false;
-+  bool capture_uses_nv12mt_ = false;
- };
- 
- }  // namespace media
-Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-===================================================================
---- chromium-147.0.7727.116.orig/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-+++ chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-@@ -628,6 +628,48 @@ H265Decoder::H265Accelerator::Status V4L
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+@@ -623,6 +623,48 @@ H265Decoder::H265Accelerator::Status V4L2VideoDecoderDelegateH265::SubmitSlice(
        slice_off_in_frame + 3 + header_bytes_in_buffer;
    const size_t end_off_in_frame = slice_off_in_frame + slice_bytes;
  
@@ -106,7 +88,7 @@ Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.c
    struct v4l2_ctrl_hevc_slice_params sp;
    memset(&sp, 0, sizeof(sp));
    // Per rpi-hevc-dec (drivers/media/platform/raspberrypi/hevc_dec/
-@@ -636,7 +678,7 @@ H265Decoder::H265Accelerator::Status V4L
+@@ -631,7 +673,7 @@ H265Decoder::H265Accelerator::Status V4L2VideoDecoderDelegateH265::SubmitSlice(
    // bit_size measures the slice DATA length (from data_byte_offset
    // to end of slice payload), in bits. Driver tolerates including
    // rbsp_stop_one_bit byte.
@@ -115,3 +97,17 @@ Index: chromium-147.0.7727.116/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.c
    sp.data_byte_offset = static_cast<__u32>(data_off_in_frame);
    sp.num_entry_point_offsets = 0;  // tiles/wpp not implemented yet
    sp.nal_unit_type = static_cast<__u8>(slice_hdr->nal_unit_type);
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
+@@ -102,6 +102,11 @@ class V4L2VideoDecoderDelegateH265 : public H265Decoder::H265Accelerator {
+   std::vector<int32_t> dpb_poc_map_;
+   // Whether we've explicitly set the START_CODE control for this device yet.
+   bool start_code_control_set_ = false;
++  // PATCH_0018: cache of negotiated CAPTURE-queue pixelformat semantics.
++  // True iff the kernel negotiated V4L2_PIX_FMT_NV12MT_COL128 or _10_COL128,
++  // in which case rpi-hevc-dec uses the non-old_bits bit_size convention.
++  bool capture_format_probed_ = false;
++  bool capture_uses_nv12mt_ = false;
+ };
+ 
+ }  // namespace media

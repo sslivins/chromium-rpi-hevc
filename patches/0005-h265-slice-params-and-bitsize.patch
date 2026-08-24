@@ -1,45 +1,8 @@
 Description: 0005-h265-slice-params-and-bitsize
 
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
-@@ -14,6 +14,7 @@
- #include "media/gpu/h265_dpb.h"
- 
- struct v4l2_ctrl_hevc_decode_params;
-+struct v4l2_ctrl_hevc_slice_params;  // PATCH_0006_HEVC_SLICE_PARAMS
- 
- namespace media {
- 
-@@ -81,6 +82,26 @@
-   // Indicate that a frame is dropped because it's not decodable
-   // (RASL frame). This is updated every SubmitFrameMetadata().
-   bool drop_frame_ = false;
-+
-+  // PATCH_0006_HEVC_SLICE_PARAMS : Per-frame HEVC slice_params accumulator. The Pi
-+  // rpi-hevc-dec driver requires V4L2_CID_STATELESS_HEVC_SLICE_PARAMS as a
-+  // dynamic array control. We accumulate one entry per call to SubmitSlice and
-+  // submit them all in a single S_EXT_CTRLS in SubmitDecode before queueing
-+  // the output buffer.
-+  std::vector<struct v4l2_ctrl_hevc_slice_params> slice_params_;
-+  // Running byte offset into the per-frame OUTPUT buffer (matches what
-+  // V4L2StatelessVideoDecoderBackend::SubmitSlice appends).
-+  size_t accumulated_data_size_ = 0;
-+  // Cached width-in-CTBs for slice_segment_addr calculation across slices.
-+  int min_cb_log2_size_y_ = 0;
-+  int ctb_size_y_ = 0;
-+  // Track which POCs have been seen as DPB refs in this frame's
-+  // SubmitFrameMetadata so SubmitSlice can map ref pictures to dpb indexes.
-+  // Keyed by pic_order_cnt_val.
-+  // (kept simple: we re-scan v4l2 dpb table built by FillInV4L2DPB).
-+  std::vector<int32_t> dpb_poc_map_;
-+  // Whether we've explicitly set the START_CODE control for this device yet.
-+  bool start_code_control_set_ = false;
- };
- 
- }  // namespace media
 --- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
 +++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-@@ -189,6 +189,23 @@
+@@ -187,6 +187,23 @@ V4L2VideoDecoderDelegateH265::FillInV4L2DPB(
    return ref_surfaces;
  }
  
@@ -63,7 +26,7 @@ Description: 0005-h265-slice-params-and-bitsize
  H265Decoder::H265Accelerator::Status
  V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
      const H265SPS* sps,
-@@ -199,6 +216,7 @@
+@@ -197,6 +214,7 @@ V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
      const H265Picture::Vector& ref_pic_set_st_curr_after,
      const H265Picture::Vector& ref_pic_set_st_curr_before,
      scoped_refptr<H265Picture> pic) {
@@ -71,7 +34,7 @@ Description: 0005-h265-slice-params-and-bitsize
    drop_frame_ = false;
    if (pic->no_rasl_output_flag_ &&
        (slice_hdr->nal_unit_type == H265NALU::RASL_N ||
-@@ -209,6 +227,15 @@
+@@ -207,6 +225,15 @@ V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
      return Status::kOk;
    }
  
@@ -84,10 +47,10 @@ Description: 0005-h265-slice-params-and-bitsize
 +  ctb_size_y_ = 1 << (min_cb_log2_size_y_ +
 +      sps->log2_diff_max_min_luma_coding_block_size);
 +
-   struct v4l2_ext_control ctrl;
+   struct v4l2_ext_control ctrl = {};
    std::vector<struct v4l2_ext_control> ctrls;
  
-@@ -266,6 +293,27 @@
+@@ -263,6 +290,27 @@ V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
    SET_V4L2_SPS_FLAG_IF(strong_intra_smoothing_enabled_flag,
                         V4L2_HEVC_SPS_FLAG_STRONG_INTRA_SMOOTHING_ENABLED);
  #undef SET_V4L2_SPS_FLAG_IF
@@ -112,10 +75,10 @@ Description: 0005-h265-slice-params-and-bitsize
 +            << " CTBy=" << ctb_size_y << " gridX=" << ctbs_x << " gridY=" << ctbs_y << " CTBs=" << (ctbs_x*ctbs_y)
 +            << " sps_flags=" << std::hex << v4l2_sps.flags << std::dec;
 +  }
-   memset(&ctrl, 0, sizeof(ctrl));
+   ctrl = {};
    ctrl.id = V4L2_CID_STATELESS_HEVC_SPS;
    ctrl.size = sizeof(v4l2_sps);
-@@ -364,6 +412,18 @@
+@@ -361,6 +409,18 @@ V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
                         V4L2_HEVC_PPS_FLAG_UNIFORM_SPACING);
  #undef SET_V4L2_PPS_FLAG_IF
  
@@ -131,10 +94,10 @@ Description: 0005-h265-slice-params-and-bitsize
 +          << " tilesC-1=" << (int)v4l2_pps.num_tile_columns_minus1
 +          << " tilesR-1=" << (int)v4l2_pps.num_tile_rows_minus1
 +          << " pps_flags=" << std::hex << v4l2_pps.flags << std::dec;
-   memset(&ctrl, 0, sizeof(ctrl));
+   ctrl = {};
    ctrl.id = V4L2_CID_STATELESS_HEVC_PPS;
    ctrl.size = sizeof(v4l2_pps);
-@@ -494,6 +554,21 @@
+@@ -490,6 +550,21 @@ V4L2VideoDecoderDelegateH265::SubmitFrameMetadata(
                      ref_pic_set_st_curr_after, ref_pic_set_st_curr_before);
    dec_surface->SetReferenceSurfaces(ref_surfaces);
  
@@ -153,10 +116,10 @@ Description: 0005-h265-slice-params-and-bitsize
 +          << " nAfter=" << (int)v4l2_decode_param.num_poc_st_curr_after
 +          << " nLT=" << (int)v4l2_decode_param.num_poc_lt_curr
 +          << " dp_flags=" << std::hex << v4l2_decode_param.flags << std::dec;
-   memset(&ctrl, 0, sizeof(ctrl));
+   ctrl = {};
    ctrl.id = V4L2_CID_STATELESS_HEVC_DECODE_PARAMS;
    ctrl.size = sizeof(v4l2_decode_param);
-@@ -533,12 +608,171 @@
+@@ -528,12 +603,171 @@ H265Decoder::H265Accelerator::Status V4L2VideoDecoderDelegateH265::SubmitSlice(
    scoped_refptr<V4L2DecodeSurface> dec_surface =
        H265PictureToV4L2DecodeSurface(pic.get());
  
@@ -332,7 +295,7 @@ Description: 0005-h265-slice-params-and-bitsize
      return surface_handler_->SubmitSlice(dec_surface.get(), nullptr,
                                           data_copy_size)
                 ? Status::kOk
-@@ -563,6 +797,35 @@
+@@ -557,6 +791,35 @@ H265Decoder::H265Accelerator::Status V4L2VideoDecoderDelegateH265::SubmitDecode(
    scoped_refptr<V4L2DecodeSurface> dec_surface =
        H265PictureToV4L2DecodeSurface(pic.get());
  
@@ -368,7 +331,7 @@ Description: 0005-h265-slice-params-and-bitsize
    DVLOGF(4) << "Submitting decode for surface: " << dec_surface->ToString();
    surface_handler_->DecodeSurface(dec_surface);
    return Status::kOk;
-@@ -578,6 +841,10 @@
+@@ -572,6 +835,10 @@ bool V4L2VideoDecoderDelegateH265::OutputPicture(
  
  void V4L2VideoDecoderDelegateH265::Reset() {
    drop_frame_ = false;
@@ -379,3 +342,40 @@ Description: 0005-h265-slice-params-and-bitsize
  }
  
  bool V4L2VideoDecoderDelegateH265::IsChromaSamplingSupported(
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.h
+@@ -14,6 +14,7 @@
+ #include "media/gpu/h265_dpb.h"
+ 
+ struct v4l2_ctrl_hevc_decode_params;
++struct v4l2_ctrl_hevc_slice_params;  // PATCH_0006_HEVC_SLICE_PARAMS
+ 
+ namespace media {
+ 
+@@ -81,6 +82,26 @@ class V4L2VideoDecoderDelegateH265 : public H265Decoder::H265Accelerator {
+   // Indicate that a frame is dropped because it's not decodable
+   // (RASL frame). This is updated every SubmitFrameMetadata().
+   bool drop_frame_ = false;
++
++  // PATCH_0006_HEVC_SLICE_PARAMS : Per-frame HEVC slice_params accumulator. The Pi
++  // rpi-hevc-dec driver requires V4L2_CID_STATELESS_HEVC_SLICE_PARAMS as a
++  // dynamic array control. We accumulate one entry per call to SubmitSlice and
++  // submit them all in a single S_EXT_CTRLS in SubmitDecode before queueing
++  // the output buffer.
++  std::vector<struct v4l2_ctrl_hevc_slice_params> slice_params_;
++  // Running byte offset into the per-frame OUTPUT buffer (matches what
++  // V4L2StatelessVideoDecoderBackend::SubmitSlice appends).
++  size_t accumulated_data_size_ = 0;
++  // Cached width-in-CTBs for slice_segment_addr calculation across slices.
++  int min_cb_log2_size_y_ = 0;
++  int ctb_size_y_ = 0;
++  // Track which POCs have been seen as DPB refs in this frame's
++  // SubmitFrameMetadata so SubmitSlice can map ref pictures to dpb indexes.
++  // Keyed by pic_order_cnt_val.
++  // (kept simple: we re-scan v4l2 dpb table built by FillInV4L2DPB).
++  std::vector<int32_t> dpb_poc_map_;
++  // Whether we've explicitly set the START_CODE control for this device yet.
++  bool start_code_control_set_ = false;
+ };
+ 
+ }  // namespace media
