@@ -69,6 +69,7 @@ readonly CHROMIUM_VERSION_FULL="151.0.7922.173-1~deb13u1+rpt1"
 readonly CHROMIUM_VERSION_UPSTREAM="151.0.7922.173"
 readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-151.0.7922.173"
 readonly SHA256_ORIG="d0330f43015f2538a69bdb66a13a9f955f44c8dbc1bcaed4452d54858ee0709c"
+readonly SHA256_ORIG_PREGEN="4655486724e0f2765949d439d8e8caee4801ce47ed9f2bd52bcb8236fbecdeb6"
 readonly SHA256_DEBIAN="cd86eb18db8ef45467464d9c89dc121a782f940934ecccb194479d371ff825dc"
 readonly SHA256_DSC="461a55d3bdef2e58078159a010fb41b23f9f5bc834f36155de565b4d0dbd4238"
 
@@ -199,10 +200,15 @@ _cmd_fetch() {
 
     local upstream_url="${UPSTREAM_RELEASE_URL:-$UPSTREAM_RELEASE_URL_DEFAULT}"
     local orig="chromium_${CHROMIUM_VERSION_UPSTREAM}.orig.tar.xz"
+    # 151.x's .dsc introduced a second orig component ("-pre-gen") holding
+    # pre-generated files (multi-tarball Debian source format 3.0 quilt).
+    # 147's .dsc only had orig+debian; this one is new to the 151 pin.
+    local orig_pregen="chromium_${CHROMIUM_VERSION_UPSTREAM}.orig-pre-gen.tar.xz"
     local debian="chromium_${CHROMIUM_VERSION_FULL}.debian.tar.xz"
     local dsc="chromium_${CHROMIUM_VERSION_FULL}.dsc"
     # GitHub Releases mangle ~ to . in asset filenames.
     local orig_url="$orig"
+    local orig_pregen_url="$orig_pregen"
     local debian_url="${debian//\~/.}"
     local dsc_url="${dsc//\~/.}"
 
@@ -231,6 +237,7 @@ _cmd_fetch() {
         _verify_sha256 "$local_name" "$expected"
     }
     _fetch_one "$orig"   "$orig_url"   "$SHA256_ORIG"
+    _fetch_one "$orig_pregen" "$orig_pregen_url" "$SHA256_ORIG_PREGEN"
     _fetch_one "$debian" "$debian_url" "$SHA256_DEBIAN"
     _fetch_one "$dsc"    "$dsc_url"    "$SHA256_DSC"
 
