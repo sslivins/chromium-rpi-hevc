@@ -229,4 +229,5 @@
 +                                 pic->get_colorspace(),
 +                                 pic->dynamic_hdr_metadata());
    return true;
- } 
+ }
+ 
