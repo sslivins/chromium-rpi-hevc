@@ -191,7 +191,7 @@
                                   pic->bitstream_id(), pic->visible_rect(),
 -                                 pic->get_colorspace());
 +                                 pic->get_colorspace(),
- +                                 pic->dynamic_hdr_metadata());
++                                 pic->dynamic_hdr_metadata());
    return true;
  }
  
@@ -203,7 +203,7 @@
                                   pic->bitstream_id(), pic->visible_rect(),
 -                                 pic->get_colorspace());
 +                                 pic->get_colorspace(),
- +                                 pic->dynamic_hdr_metadata());
++                                 pic->dynamic_hdr_metadata());
    return true;
  }
  
@@ -215,7 +215,7 @@
                                   pic->bitstream_id(), pic->visible_rect(),
 -                                 pic->get_colorspace());
 +                                 pic->get_colorspace(),
- +                                 pic->dynamic_hdr_metadata());
++                                 pic->dynamic_hdr_metadata());
    return true;
  }
  
@@ -227,6 +227,6 @@
                                   pic->bitstream_id(), pic->visible_rect(),
 -                                 pic->get_colorspace());
 +                                 pic->get_colorspace(),
- +                                 pic->dynamic_hdr_metadata());
++                                 pic->dynamic_hdr_metadata());
    return true;
  } 
