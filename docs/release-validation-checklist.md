@@ -21,9 +21,16 @@ regressions have already shipped/been caught this way:
   See `docs/hevc-advertising-regression-151.md`.
 - **151 10-bit Main10 render** — 8-bit HEVC plays, but 10-bit Main10 (the
   NC30 → P030 GBM/EGL import+sample path, patches `0009`–`0012`, `0017`)
-  renders a **black frame with audio still playing**. Confirmed a clean
-  151 regression: the identical clip renders correctly on the 147 build.
-  **OPEN as of 2026-08-28.**
+  rendered a **black frame with audio still playing**. Confirmed a clean
+  151 regression: the identical clip rendered correctly on the 147 build.
+  **FIXED by `patches/0021-holder-keep-p010-format-for-sand-perplane.patch`**
+  (2026-08-28). Root cause: 151's `ozone_image_gl_textures_holder.cc`
+  `GetBinding` substituted the single-channel *per-plane* format
+  (`R16`/`GR1616`) into the multi-plane branch, so the `fcc == DRM_FORMAT_P010`
+  remap guard in `0011`/`0012` never matched and the SAND128-packed 10-bit
+  buffer was imported as untiled R16 → black. `0021` keeps the whole `kP010`
+  format for the Broadcom-SAND modifier case so the P010→P030 remap fires
+  exactly as it does on 147.
 
 The lesson: "chromium launches and the logo shows" is **not** validation.
 Every build must be run through the matrix below on real Pi5 hardware
@@ -61,8 +68,8 @@ last known-good baseline for regression comparison.
 |---|---------|-----------------|-----------|-------|---------------|-----|-----|
 | 1 | HEVC SD  | HEVC Main       | 8-bit  | SDR (bt709)          | hev1 | PASS | **PASS** (needs `0020`) |
 | 2 | HEVC HD  | HEVC Main       | 8-bit  | SDR                  | hev1/hvc1 | PASS | **PASS** |
-| 3 | HEVC HD  | HEVC **Main10** | 10-bit | SDR (bt709)          | hvc1 | PASS | **FAIL — black** |
-| 4 | HEVC HD  | HEVC **Main10** | 10-bit | **HDR10** (bt2020/PQ)| hvc1 | PASS | **FAIL — black** |
+| 3 | HEVC HD  | HEVC **Main10** | 10-bit | SDR (bt709)          | hvc1 | PASS | **PASS** (needs `0021`) |
+| 4 | HEVC HD  | HEVC **Main10** | 10-bit | **HDR10** (bt2020/PQ)| hvc1 | PASS | **PASS** (needs `0021`) |
 | 5 | HEVC 4K  | HEVC Main / Main10 | 8/10 | SDR + HDR10        | hvc1 | TODO | TODO |
 | 6 | H.264 HD | H.264 High      | 8-bit  | SDR                  | n/a  | PASS | verify |
 | 7 | VP9 / AV1 (if enabled) | — | — | — | — | n/a | verify |
@@ -115,6 +122,27 @@ them script-generated avoids committing binaries and keeps them reproducible.
   ```
 - **4K variants** (row 5): same as above with `size=3840x2160`.
 
+## Automated device validation
+
+`pi-runtime/validate-hevc.sh` runs this matrix on-device against the
+currently installed `/usr/lib/chromium/chromium`. It generates any missing
+test clips with `ffmpeg`, drives each clip through the real kiosk player,
+and machine-checks signals 1–3 plus the 10-bit **P010→P030 remap tripwire**
+(a silent remap on a 10-bit clip = the 151 black-Main10 regression). It
+pauses on each 10-bit row for the human eyeball (signal 4) unless
+`--no-pause` is passed, and restores the normal kiosk image + `agora-cms-client`
+on exit.
+
+```bash
+sudo ./validate-hevc.sh                # full matrix, interactive
+sudo ./validate-hevc.sh --no-pause     # unattended machine-signal pass
+sudo ./validate-hevc.sh --only main10_sdr_test.mp4
+```
+
+Machine PASS is **not** release sign-off: a 10-bit row can pass signals 1–3
+while the screen is black, which is exactly why the remap tripwire and the
+human eyeball both exist.
+
 ## How to run a build on-device (fast iteration)
 
 1. Build on the ARM VM: `build/cli.sh fast` produces
@@ -148,13 +176,17 @@ Do **not** run `build/cli.sh full` / cut a release until:
 - [ ] Any FAIL row has a tracked fix or an explicit, documented decision to
       ship without that capability.
 
-## Currently open
+## Recently closed
 
-- **Row 3 & 4 (10-bit Main10 / HDR10) FAIL on 151** — black frame, audio
-  OK, `/dev/video19` engaged, no demuxer error. Confirmed 151-only
-  regression (renders on 147). Suspect the NC30 → P030 GBM import / EGL
-  binding / per-plane modifier path (`0009`–`0012`, `0017`) as ported to
-  151. Diagnostic patch `0016-diag-log-getbinding` already emits
-  `AGORA_GETBINDING*` logs to pinpoint which import branch the 10-bit frame
-  takes — enable Chromium stderr logging and compare the 8-bit (working) vs
-  10-bit (black) branch.
+- **Row 3 & 4 (10-bit Main10 / HDR10) — FIXED on 151** by
+  `patches/0021-holder-keep-p010-format-for-sand-perplane.patch`
+  (2026-08-28). Was: black frame, audio OK, `/dev/video19` engaged, no
+  demuxer error. Root cause: `ozone_image_gl_textures_holder.cc::GetBinding`
+  in 151 substituted the per-plane single-channel format (`R16`/`GR1616`)
+  in the multi-plane branch, so the `fcc == DRM_FORMAT_P010` guard in the
+  NC30→P030 GBM/EGL remap (`0011`/`0012`) never matched and the SAND128
+  10-bit buffer was sampled as untiled R16. `0021` keeps the whole `kP010`
+  format for the Broadcom-SAND modifier case (`(modifier >> 56) == 7`),
+  restoring the 147 behavior. Verified: `PATCH_EGL_NC30: remapping
+  P010 -> P030` now fires; both SDR Main10 and HDR10 clips render and pass
+  `pi-runtime/validate-hevc.sh`.
