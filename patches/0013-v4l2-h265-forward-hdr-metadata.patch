@@ -1,3 +1,4 @@
+
 --- a/media/gpu/v4l2/decode_surface_handler.h
 +++ b/media/gpu/v4l2/decode_surface_handler.h
 @@ -7,6 +7,7 @@
@@ -8,7 +9,7 @@
  
  namespace media {
  
-@@ -38,7 +39,8 @@
+@@ -38,7 +39,8 @@ class DecodeSurfaceHandler {
    virtual void SurfaceReady(scoped_refptr<T> dec_surface,
                              int32_t bitstream_id,
                              const gfx::Rect& visible_rect,
@@ -18,44 +19,30 @@
  };
  
  }  // namespace media
---- a/media/gpu/v4l2/v4l2_decode_surface.h
-+++ b/media/gpu/v4l2/v4l2_decode_surface.h
-@@ -12,6 +12,7 @@
- #include "base/sequence_checker.h"
- #include "media/base/video_color_space.h"
- #include "media/gpu/v4l2/v4l2_device.h"
+--- a/media/gpu/v4l2/legacy/v4l2_video_decoder_backend_stateful.cc
++++ b/media/gpu/v4l2/legacy/v4l2_video_decoder_backend_stateful.cc
+@@ -28,8 +28,9 @@
+ #include "media/gpu/v4l2/v4l2_vda_helpers.h"
+ #include "media/gpu/v4l2/v4l2_video_decoder_backend.h"
+ #include "media/gpu/v4l2/v4l2_vp9_helpers.h"
 +#include "ui/gfx/hdr_metadata.h"
- #include "ui/gfx/geometry/rect.h"
  
- struct v4l2_ext_controls;
-@@ -49,6 +50,7 @@
-   void SetDecoded();
-   void SetVisibleRect(const gfx::Rect& visible_rect);
-   void SetColorSpace(const VideoColorSpace& color_space);
-+  void SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata);
-   // Take references to each reference surface and keep them until the
-   // target surface is decoded.
-   void SetReferenceSurfaces(
-@@ -77,6 +79,7 @@
-   scoped_refptr<FrameResource> frame() const { return frame_; }
-   gfx::Rect visible_rect() const { return visible_rect_; }
-   const VideoColorSpace& color_space() const { return color_space_; }
-+  const gfx::HDRMetadata& hdr_metadata() const { return hdr_metadata_; }
-   uint64_t secure_handle() const { return secure_handle_; }
+ #include "build/build_config.h"
  
-   std::string ToString() const;
-@@ -98,6 +101,8 @@
-   gfx::Rect visible_rect_;
-   // The color space of the buffer.
-   VideoColorSpace color_space_;
-+  // The HDR metadata associated with the buffer (empty if not HDR).
-+  gfx::HDRMetadata hdr_metadata_;
+ namespace media {
  
-   // Indicate whether the surface is decoded or not.
-   bool decoded_;
+@@ -478,7 +479,7 @@ void V4L2StatefulVideoDecoderBackend::OnOutputBufferDequeued(
+ 
+     const base::TimeDelta timestamp = base::TimeDelta::FromTimeSpec(timespec);
+     // TODO(b/214190092): Get color space from the buffer.
+-    client_->OutputFrame(std::move(frame), *visible_rect_, color_space_,
++    client_->OutputFrame(std::move(frame), *visible_rect_, color_space_, gfx::HDRMetadata{},
+                          timestamp);
+   }
+ 
 --- a/media/gpu/v4l2/v4l2_decode_surface.cc
 +++ b/media/gpu/v4l2/v4l2_decode_surface.cc
-@@ -60,6 +60,13 @@
+@@ -60,6 +60,13 @@ void V4L2DecodeSurface::SetColorSpace(const VideoColorSpace& color_space) {
    color_space_ = color_space;
  }
  
@@ -69,9 +56,72 @@
  void V4L2DecodeSurface::SetReferenceSurfaces(
      std::vector<scoped_refptr<V4L2DecodeSurface>> ref_surfaces) {
    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+--- a/media/gpu/v4l2/v4l2_decode_surface.h
++++ b/media/gpu/v4l2/v4l2_decode_surface.h
+@@ -12,6 +12,7 @@
+ #include "base/sequence_checker.h"
+ #include "media/base/video_color_space.h"
+ #include "media/gpu/v4l2/v4l2_device.h"
++#include "ui/gfx/hdr_metadata.h"
+ #include "ui/gfx/geometry/rect.h"
+ 
+ struct v4l2_ext_controls;
+@@ -49,6 +50,7 @@ class V4L2DecodeSurface : public base::RefCounted<V4L2DecodeSurface> {
+   void SetDecoded();
+   void SetVisibleRect(const gfx::Rect& visible_rect);
+   void SetColorSpace(const VideoColorSpace& color_space);
++  void SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata);
+   // Take references to each reference surface and keep them until the
+   // target surface is decoded.
+   void SetReferenceSurfaces(
+@@ -77,6 +79,7 @@ class V4L2DecodeSurface : public base::RefCounted<V4L2DecodeSurface> {
+   scoped_refptr<FrameResource> frame() const { return frame_; }
+   gfx::Rect visible_rect() const { return visible_rect_; }
+   const VideoColorSpace& color_space() const { return color_space_; }
++  const gfx::HDRMetadata& hdr_metadata() const { return hdr_metadata_; }
+   uint64_t secure_handle() const { return secure_handle_; }
+ 
+   std::string ToString() const;
+@@ -98,6 +101,8 @@ class V4L2DecodeSurface : public base::RefCounted<V4L2DecodeSurface> {
+   gfx::Rect visible_rect_;
+   // The color space of the buffer.
+   VideoColorSpace color_space_;
++  // The HDR metadata associated with the buffer (empty if not HDR).
++  gfx::HDRMetadata hdr_metadata_;
+ 
+   // Indicate whether the surface is decoded or not.
+   bool decoded_;
+--- a/media/gpu/v4l2/v4l2_video_decoder.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder.cc
+@@ -1303,6 +1303,7 @@ void V4L2VideoDecoder::ServiceDeviceTask(bool event) {
+ void V4L2VideoDecoder::OutputFrame(scoped_refptr<FrameResource> frame,
+                                    const gfx::Rect& visible_rect,
+                                    const VideoColorSpace& color_space,
++                                   const gfx::HDRMetadata& hdr_metadata,
+                                    base::TimeDelta timestamp) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(decoder_sequence_checker_);
+   DVLOGF(4) << "timestamp: " << timestamp.InMilliseconds() << " msec";
+@@ -1326,6 +1327,7 @@ void V4L2VideoDecoder::OutputFrame(scoped_refptr<FrameResource> frame,
+   }
+ 
+   frame->set_color_space(color_space.ToGfxColorSpace());
++  frame->set_hdr_metadata(hdr_metadata);
+ 
+   output_cb_.Run(std::move(frame));
+ }
+--- a/media/gpu/v4l2/v4l2_video_decoder.h
++++ b/media/gpu/v4l2/v4l2_video_decoder.h
+@@ -85,6 +85,7 @@ class MEDIA_GPU_EXPORT V4L2VideoDecoder
+   void OutputFrame(scoped_refptr<FrameResource> frame,
+                    const gfx::Rect& visible_rect,
+                    const VideoColorSpace& color_space,
++                   const gfx::HDRMetadata& hdr_metadata,
+                    base::TimeDelta timestamp) override;
+   DmabufVideoFramePool* GetVideoFramePool() const override;
+ 
 --- a/media/gpu/v4l2/v4l2_video_decoder_backend.h
 +++ b/media/gpu/v4l2/v4l2_video_decoder_backend.h
-@@ -66,6 +66,7 @@
+@@ -66,6 +66,7 @@ class V4L2VideoDecoderBackend {
      virtual void OutputFrame(scoped_refptr<FrameResource> frame,
                               const gfx::Rect& visible_rect,
                               const VideoColorSpace& color_space,
@@ -79,21 +129,9 @@
                               base::TimeDelta timestamp) = 0;
      // Get the video frame pool without passing the ownership.
      virtual DmabufVideoFramePool* GetVideoFramePool() const = 0;
---- a/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.h
-+++ b/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.h
-@@ -73,7 +73,8 @@
-   void SurfaceReady(scoped_refptr<V4L2DecodeSurface> dec_surface,
-                     int32_t bitstream_id,
-                     const gfx::Rect& visible_rect,
--                    const VideoColorSpace& color_space) override;
-+                    const VideoColorSpace& color_space,
-+                    const gfx::HDRMetadata& hdr_metadata) override;
-   void ResumeDecoding() override;
- 
-  private:
 --- a/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.cc
 +++ b/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.cc
-@@ -344,7 +344,8 @@
+@@ -343,7 +343,8 @@ void V4L2StatelessVideoDecoderBackend::SurfaceReady(
      scoped_refptr<V4L2DecodeSurface> dec_surface,
      int32_t bitstream_id,
      const gfx::Rect& visible_rect,
@@ -103,7 +141,7 @@
    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
    DVLOGF(3);
  
-@@ -361,6 +362,7 @@
+@@ -360,6 +361,7 @@ void V4L2StatelessVideoDecoderBackend::SurfaceReady(
  
    dec_surface->SetVisibleRect(visible_rect);
    dec_surface->SetColorSpace(color_space);
@@ -111,7 +149,7 @@
  
    output_request_queue_.push(
        OutputRequest::Surface(std::move(dec_surface), timestamp));
-@@ -533,7 +535,8 @@
+@@ -538,7 +540,8 @@ void V4L2StatelessVideoDecoderBackend::PumpOutputSurfaces() {
  
          DCHECK(surface->frame());
          client_->OutputFrame(surface->frame(), surface->visible_rect(),
@@ -121,110 +159,75 @@
  
          {
            const auto timestamp = surface->frame()->timestamp();
---- a/media/gpu/v4l2/v4l2_video_decoder.h
-+++ b/media/gpu/v4l2/v4l2_video_decoder.h
-@@ -85,6 +85,7 @@
-   void OutputFrame(scoped_refptr<FrameResource> frame,
-                    const gfx::Rect& visible_rect,
-                    const VideoColorSpace& color_space,
-+                   const gfx::HDRMetadata& hdr_metadata,
-                    base::TimeDelta timestamp) override;
-   DmabufVideoFramePool* GetVideoFramePool() const override;
+--- a/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.h
++++ b/media/gpu/v4l2/v4l2_video_decoder_backend_stateless.h
+@@ -73,7 +73,8 @@ class V4L2StatelessVideoDecoderBackend : public V4L2VideoDecoderBackend,
+   void SurfaceReady(scoped_refptr<V4L2DecodeSurface> dec_surface,
+                     int32_t bitstream_id,
+                     const gfx::Rect& visible_rect,
+-                    const VideoColorSpace& color_space) override;
++                    const VideoColorSpace& color_space,
++                    const gfx::HDRMetadata& hdr_metadata) override;
+   void ResumeDecoding() override;
  
---- a/media/gpu/v4l2/v4l2_video_decoder.cc
-+++ b/media/gpu/v4l2/v4l2_video_decoder.cc
-@@ -1313,6 +1313,7 @@
- void V4L2VideoDecoder::OutputFrame(scoped_refptr<FrameResource> frame,
-                                    const gfx::Rect& visible_rect,
-                                    const VideoColorSpace& color_space,
-+                                   const gfx::HDRMetadata& hdr_metadata,
-                                    base::TimeDelta timestamp) {
-   DCHECK_CALLED_ON_VALID_SEQUENCE(decoder_sequence_checker_);
-   DVLOGF(4) << "timestamp: " << timestamp.InMilliseconds() << " msec";
-@@ -1336,6 +1337,7 @@
-   }
- 
-   frame->set_color_space(color_space.ToGfxColorSpace());
-+  frame->set_hdr_metadata(hdr_metadata);
- 
-   output_cb_.Run(std::move(frame));
- }
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h264.cc
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h264.cc
-@@ -638,7 +638,8 @@
-     scoped_refptr<H264Picture> pic) {
-   surface_handler_->SurfaceReady(H264PictureToV4L2DecodeSurface(pic.get()),
-                                  pic->bitstream_id(), pic->visible_rect(),
--                                 pic->get_colorspace());
-+                                 pic->get_colorspace(),
-+                                 pic->hdr_metadata());
-   return true;
- }
- 
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
-@@ -880,7 +880,8 @@
-     scoped_refptr<H265Picture> pic) {
-   surface_handler_->SurfaceReady(H265PictureToV4L2DecodeSurface(pic.get()),
-                                  pic->bitstream_id(), pic->visible_rect(),
--                                 pic->get_colorspace());
-+                                 pic->get_colorspace(),
-+                                 pic->hdr_metadata());
-   return true;
- }
- 
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_vp8.cc
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_vp8.cc
-@@ -248,7 +248,8 @@
- bool V4L2VideoDecoderDelegateVP8::OutputPicture(scoped_refptr<VP8Picture> pic) {
-   surface_handler_->SurfaceReady(VP8PictureToV4L2DecodeSurface(pic.get()),
-                                  pic->bitstream_id(), pic->visible_rect(),
--                                 pic->get_colorspace());
-+                                 pic->get_colorspace(),
-+                                 pic->hdr_metadata());
-   return true;
- }
- 
---- a/media/gpu/v4l2/v4l2_video_decoder_delegate_vp9.cc
-+++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_vp9.cc
-@@ -293,7 +293,8 @@
-   VLOGF(3);
-   surface_handler_->SurfaceReady(VP9PictureToV4L2DecodeSurface(pic.get()),
-                                  pic->bitstream_id(), pic->visible_rect(),
--                                 pic->get_colorspace());
-+                                 pic->get_colorspace(),
-+                                 pic->hdr_metadata());
-   return true;
- }
- 
+  private:
 --- a/media/gpu/v4l2/v4l2_video_decoder_delegate_av1.cc
 +++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_av1.cc
-@@ -903,7 +903,8 @@
+@@ -899,7 +899,8 @@ bool V4L2VideoDecoderDelegateAV1::OutputPicture(const AV1Picture& pic) {
  
    surface_handler_->SurfaceReady(
        v4l2_pic->dec_surface(), v4l2_pic->bitstream_id(),
 -      v4l2_pic->visible_rect(), v4l2_pic->get_colorspace());
 +      v4l2_pic->visible_rect(), v4l2_pic->get_colorspace(),
-+      v4l2_pic->hdr_metadata());
++      v4l2_pic->dynamic_hdr_metadata());
  
    return true;
  }
---- a/media/gpu/v4l2/legacy/v4l2_video_decoder_backend_stateful.cc
-+++ b/media/gpu/v4l2/legacy/v4l2_video_decoder_backend_stateful.cc
-@@ -31,6 +31,7 @@
- #include "media/gpu/v4l2/v4l2_device.h"
- #include "media/gpu/v4l2/v4l2_vda_helpers.h"
- #include "media/gpu/v4l2/v4l2_video_decoder_backend.h"
-+#include "ui/gfx/hdr_metadata.h"
- #include "media/gpu/v4l2/v4l2_vp9_helpers.h"
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h264.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h264.cc
+@@ -638,7 +638,8 @@ bool V4L2VideoDecoderDelegateH264::OutputPicture(
+     scoped_refptr<H264Picture> pic) {
+   surface_handler_->SurfaceReady(H264PictureToV4L2DecodeSurface(pic.get()),
+                                  pic->bitstream_id(), pic->visible_rect(),
+-                                 pic->get_colorspace());
++                                 pic->get_colorspace(),
++                                 pic->dynamic_hdr_metadata());
+   return true;
+ }
  
- #include "build/build_config.h"
-@@ -493,7 +494,7 @@
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_h265.cc
+@@ -874,7 +874,8 @@ bool V4L2VideoDecoderDelegateH265::OutputPicture(
+     scoped_refptr<H265Picture> pic) {
+   surface_handler_->SurfaceReady(H265PictureToV4L2DecodeSurface(pic.get()),
+                                  pic->bitstream_id(), pic->visible_rect(),
+-                                 pic->get_colorspace());
++                                 pic->get_colorspace(),
++                                 pic->dynamic_hdr_metadata());
+   return true;
+ }
  
-     const base::TimeDelta timestamp = base::TimeDelta::FromTimeSpec(timespec);
-     // TODO(b/214190092): Get color space from the buffer.
--    client_->OutputFrame(std::move(frame), *visible_rect_, color_space_,
-+    client_->OutputFrame(std::move(frame), *visible_rect_, color_space_, gfx::HDRMetadata{},
-                          timestamp);
-   }
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_vp8.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_vp8.cc
+@@ -242,7 +242,8 @@ bool V4L2VideoDecoderDelegateVP8::SubmitDecode(
+ bool V4L2VideoDecoderDelegateVP8::OutputPicture(scoped_refptr<VP8Picture> pic) {
+   surface_handler_->SurfaceReady(VP8PictureToV4L2DecodeSurface(pic.get()),
+                                  pic->bitstream_id(), pic->visible_rect(),
+-                                 pic->get_colorspace());
++                                 pic->get_colorspace(),
++                                 pic->dynamic_hdr_metadata());
+   return true;
+ }
+ 
+--- a/media/gpu/v4l2/v4l2_video_decoder_delegate_vp9.cc
++++ b/media/gpu/v4l2/v4l2_video_decoder_delegate_vp9.cc
+@@ -357,7 +357,8 @@ bool V4L2VideoDecoderDelegateVP9::OutputPicture(scoped_refptr<VP9Picture> pic) {
+   VLOGF(3);
+   surface_handler_->SurfaceReady(VP9PictureToV4L2DecodeSurface(pic.get()),
+                                  pic->bitstream_id(), pic->visible_rect(),
+-                                 pic->get_colorspace());
++                                 pic->get_colorspace(),
++                                 pic->dynamic_hdr_metadata());
+   return true;
+ }
  

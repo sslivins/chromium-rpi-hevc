@@ -12,7 +12,7 @@ Last-Update: 2026-05-06
 
 --- a/ui/ozone/common/native_pixmap_egl_binding.cc
 +++ b/ui/ozone/common/native_pixmap_egl_binding.cc
-@@ -27,6 +27,8 @@
+@@ -27,6 +27,8 @@ namespace {
  #define DRM_FORMAT_R16 FOURCC('R', '1', '6', ' ')
  #define DRM_FORMAT_GR88 FOURCC('G', 'R', '8', '8')
  #define DRM_FORMAT_GR1616 FOURCC('G', 'R', '3', '2')
@@ -21,7 +21,7 @@ Last-Update: 2026-05-06
  #define DRM_FORMAT_RGB565 FOURCC('R', 'G', '1', '6')
  #define DRM_FORMAT_ARGB8888 FOURCC('A', 'R', '2', '4')
  #define DRM_FORMAT_ABGR8888 FOURCC('A', 'B', '2', '4')
-@@ -104,7 +106,18 @@
+@@ -108,7 +110,18 @@ bool NativePixmapEGLBinding::InitializeFromNativePixmap(
    attrs.push_back(EGL_HEIGHT);
    attrs.push_back(size_.height());
    attrs.push_back(EGL_LINUX_DRM_FOURCC_EXT);

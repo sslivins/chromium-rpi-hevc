@@ -65,12 +65,13 @@ readonly PATCHES_DIR=/patches
 readonly STAMP_PATCH_FP="$SRC_DIR/.local-hevc-patch-fp"
 readonly STAMP_RULES_TAIL="$SRC_DIR/.local-hevc-rules-tail-applied"
 
-readonly CHROMIUM_VERSION_FULL="147.0.7727.116-1~deb13u1+rpt1"
-readonly CHROMIUM_VERSION_UPSTREAM="147.0.7727.116"
-readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-147.0.7727.116"
-readonly SHA256_ORIG="b808992f5a680372b8276466645183315326d8d0e66f080266883a07f36551c8"
-readonly SHA256_DEBIAN="a884500201313734ea3b185473b867df48c97dedb3915fcbd9b6e0ce411fd318"
-readonly SHA256_DSC="b0ac0f716b8bb04bac2a4c0d793146b456f39bbd3a4dbb1dd5d337704012ea54"
+readonly CHROMIUM_VERSION_FULL="151.0.7922.173-1~deb13u1+rpt1"
+readonly CHROMIUM_VERSION_UPSTREAM="151.0.7922.173"
+readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-151.0.7922.173"
+readonly SHA256_ORIG="d0330f43015f2538a69bdb66a13a9f955f44c8dbc1bcaed4452d54858ee0709c"
+readonly SHA256_ORIG_PREGEN="4655486724e0f2765949d439d8e8caee4801ce47ed9f2bd52bcb8236fbecdeb6"
+readonly SHA256_DEBIAN="cd86eb18db8ef45467464d9c89dc121a782f940934ecccb194479d371ff825dc"
+readonly SHA256_DSC="461a55d3bdef2e58078159a010fb41b23f9f5bc834f36155de565b4d0dbd4238"
 
 # These are deliberately marker text; we both append them to debian/rules and
 # grep for them to detect whether the rules-tail has been applied.
@@ -97,12 +98,12 @@ _die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
 # (dpkg-buildpackage) paths. These match upstream debian/rules expectations.
 # ---------------------------------------------------------------------------
 _setup_env() {
-    export CC=clang-19
-    export CXX=clang++-19
+    export CC=clang-22
+    export CXX=clang++-22
     export AR=ar
     export NM=nm
-    export BUILD_CC=clang-19
-    export BUILD_CXX=clang++-19
+    export BUILD_CC=clang-22
+    export BUILD_CXX=clang++-22
     export BUILD_AR=ar
     export BUILD_NM=nm
     export CXXFLAGS="-stdlib=libc++"
@@ -199,10 +200,15 @@ _cmd_fetch() {
 
     local upstream_url="${UPSTREAM_RELEASE_URL:-$UPSTREAM_RELEASE_URL_DEFAULT}"
     local orig="chromium_${CHROMIUM_VERSION_UPSTREAM}.orig.tar.xz"
+    # 151.x's .dsc introduced a second orig component ("-pre-gen") holding
+    # pre-generated files (multi-tarball Debian source format 3.0 quilt).
+    # 147's .dsc only had orig+debian; this one is new to the 151 pin.
+    local orig_pregen="chromium_${CHROMIUM_VERSION_UPSTREAM}.orig-pre-gen.tar.xz"
     local debian="chromium_${CHROMIUM_VERSION_FULL}.debian.tar.xz"
     local dsc="chromium_${CHROMIUM_VERSION_FULL}.dsc"
     # GitHub Releases mangle ~ to . in asset filenames.
     local orig_url="$orig"
+    local orig_pregen_url="$orig_pregen"
     local debian_url="${debian//\~/.}"
     local dsc_url="${dsc//\~/.}"
 
@@ -231,6 +237,7 @@ _cmd_fetch() {
         _verify_sha256 "$local_name" "$expected"
     }
     _fetch_one "$orig"   "$orig_url"   "$SHA256_ORIG"
+    _fetch_one "$orig_pregen" "$orig_pregen_url" "$SHA256_ORIG_PREGEN"
     _fetch_one "$debian" "$debian_url" "$SHA256_DEBIAN"
     _fetch_one "$dsc"    "$dsc_url"    "$SHA256_DSC"
 
@@ -695,7 +702,7 @@ _cmd_debs() {
     # next `ninja` does a cold rebuild of tens of thousands of objects.
     # ONLY run debs after the change is validated via `ninja` + raw chrome
     # binary scp to the Pi. See the header WARNING block for details.
-    if [ -z "$CHROMIUM_DEBS_CONFIRM" ]; then
+    if [ -z "${CHROMIUM_DEBS_CONFIRM:-}" ]; then
         echo "REFUSING: set CHROMIUM_DEBS_CONFIRM=1 to run debs (busts incremental build cache)." >&2
         echo "See header WARNING in cli.sh for why." >&2
         return 1
@@ -849,11 +856,11 @@ _cmd_doctor() {
         _log "  FAIL: ccache not installed"; fail=$((fail+1))
     fi
 
-    # 3. clang-19 on PATH.
-    if command -v clang-19 >/dev/null 2>&1; then
-        _log "  ok: clang-19 found ($(command -v clang-19))"
+    # 3. clang-22 on PATH.
+    if command -v clang-22 >/dev/null 2>&1; then
+        _log "  ok: clang-22 found ($(command -v clang-22))"
     else
-        _log "  FAIL: clang-19 missing"; fail=$((fail+1))
+        _log "  FAIL: clang-22 missing"; fail=$((fail+1))
     fi
 
     # 4. Source tree presence (informational unless we want to be strict).

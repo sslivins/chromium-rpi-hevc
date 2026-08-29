@@ -27,15 +27,14 @@ Last-Update: 2026-05-22
 
 --- a/media/gpu/chromeos/mailbox_video_frame_converter.cc
 +++ b/media/gpu/chromeos/mailbox_video_frame_converter.cc
-@@ -249,9 +249,17 @@ MailboxVideoFrameConverter::GenerateSharedImage(
+@@ -238,9 +238,17 @@ MailboxVideoFrameConverter::GenerateSharedImage(
                             VideoPixelFormatToString(origin_frame->format()));
      return nullptr;
    }
 -#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
--  // If format is true multiplanar format, we prefer external sampler on
--  // ChromeOS and Linux.
 +#if BUILDFLAG(IS_CHROMEOS)
-+  // If format is true multiplanar format, we prefer external sampler on
+   // If format is true multiplanar format, we prefer external sampler on
+-  // ChromeOS and Linux.
 +  // ChromeOS.
 +  //
 +  // PATCH_NO_EXT_SAMPLER_LINUX: do NOT request external sampler on Linux.

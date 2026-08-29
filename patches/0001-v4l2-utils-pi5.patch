@@ -6,7 +6,7 @@ Forwarded: not-needed
 
 --- a/media/gpu/v4l2/v4l2_utils.cc
 +++ b/media/gpu/v4l2/v4l2_utils.cc
-@@ -53,6 +53,10 @@
+@@ -50,6 +50,10 @@
  #define DRM_FORMAT_MOD_MTK_16L_32S_TILE 0x0b00000000000001
  #endif
  
@@ -17,17 +17,16 @@ Forwarded: not-needed
  namespace {
  int HandledIoctl(int fd, int request, void* arg) {
    return HANDLE_EINTR(ioctl(fd, request, arg));
-@@ -247,6 +251,9 @@
+@@ -243,6 +247,8 @@ std::optional<VideoFrameLayout> V4L2FormatToVideoFrameLayout(
+ #if BUILDFLAG(IS_LINUX)
    if (video_fourcc == Fourcc(Fourcc::MM21)) {
      modifiers = DRM_FORMAT_MOD_MTK_16L_32S_TILE;
-   }
-+  if (video_fourcc == Fourcc(Fourcc::NC12)) {
++  } else if (video_fourcc == Fourcc(Fourcc::NC12)) {
 +    modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
-+  }
- #endif
-   const size_t num_buffers = pix_mp.num_planes;
-   const size_t num_color_planes = VideoFrame::NumPlanes(video_format);
-@@ -279,6 +286,26 @@
+   } else {
+     modifiers = DRM_FORMAT_MOD_LINEAR;
+   }
+@@ -279,6 +285,26 @@ std::optional<VideoFrameLayout> V4L2FormatToVideoFrameLayout(
      // It is safe to cast to size_t.
      const size_t y_stride_abs = static_cast<size_t>(y_stride);
      switch (pix_fmt) {
@@ -54,12 +53,13 @@ Forwarded: not-needed
        case V4L2_PIX_FMT_NV12:
          // The stride of UV is the same as Y in NV12.
          // The height is half of Y plane.
-@@ -590,8 +617,11 @@
- #elif BUILDFLAG(USE_V4L2_CODEC_RPI)
-   // Pi stateful decoder here  current google code doesn't look like it can
-   // cope with multiple devioces
--  constexpr char kVideoDevicePattern[] = "/dev/video10";
--  candidate_paths.push_back(kVideoDevicePattern);
+@@ -582,6 +608,14 @@ std::optional<SupportedVideoDecoderConfigs> GetSupportedV4L2DecoderConfigs() {
+ #if BUILDFLAG(IS_CHROMEOS)
+   constexpr char kVideoDevicePattern[] = "/dev/video-dec0";
+   candidate_paths.push_back(kVideoDevicePattern);
++#elif BUILDFLAG(USE_V4L2_CODEC_RPI)
++  // Pi stateful decoder here  current google code doesn't look like it can
++  // cope with multiple devioces
 +  // Pi 4 stateful H.264 / Pi 5 stateless HEVC decoders — probe both so that
 +  // chromium reports HW decode support for all codecs the platform exposes.
 +  candidate_paths.push_back("/dev/video10");

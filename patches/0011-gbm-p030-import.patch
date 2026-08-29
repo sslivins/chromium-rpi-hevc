@@ -29,7 +29,7 @@ in dmesg/Mesa logs, which prevents 10-bit HEVC frames from rendering.
  #include <memory>
  #include <utility>
  #include <vector>
-@@ -460,6 +461,21 @@
+@@ -458,6 +459,21 @@ class Device final : public ui::GbmDevice {
        UNSAFE_TODO(fd_data.offsets[i]) = handle.planes[i].offset;
      }
  

@@ -1,23 +1,36 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:147.0.7727.116-1~deb13u1+rpt1`. The patches under
-`patches/` were written and tested against this exact source tree;
-applying them to a different version is not guaranteed to work.
+version: `1:151.0.7922.173-1~deb13u1+rpt1`. The patches under
+`patches/` were rebased and reviewed against Chromium
+151.0.7922.137 (git tag `151.0.7922.137` on
+chromium.googlesource.com); the vendored/pinned build source is the
+next RPi-Distro `+rpt1` trixie release available at the time of
+vendoring, 151.0.7922.173. These are both within the 151.0.7922.x
+patch train, so no further source-level drift is expected between
+them, but this has not been build-verified — if `cli.sh patch` fails
+on a hunk, check whether upstream changed between .137 and .173 first.
 
 This document explains how the pin works, why it exists, and how to
 move it forward when the time comes.
 
 ## What is pinned
 
-Three independently-drifting inputs feed our build. All three are
+Four independently-drifting inputs feed our build. All four are
 locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~787 MB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-147.0.7727.116`, with SHA256 in `build/build.sh` |
-| RPi debian/ overlay (`*.debian.tar.xz`, ~500 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
+| Chromium source (`*.orig.tar.xz`, ~905 MB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-151.0.7922.173`, with SHA256 in `build/cli.sh` |
+| Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component new as of the 151.x `.dsc` (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
+| RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
+
+Note: the 147.x pin only had three components (orig + debian + dsc).
+The `orig-pre-gen` tarball is new to the 151.x `.dsc` — discovered the
+hard way when `dpkg-source -x` failed with `cannot fstat file
+./chromium_151.0.7922.173.orig-pre-gen.tar.xz: No such file or
+directory` because it wasn't in our first cut of the vendored release.
 
 The build dependency packages (`apt-get build-dep chromium`) are
 **not** pinned individually — they're whatever's current in the RPi
@@ -47,15 +60,15 @@ Pinning means:
 
 ## How the pin works
 
-`build/build.sh` STAGE 1:
+`build/cli.sh` `_cmd_fetch` STAGE 1:
 
-1. Constructs the three filenames from `CHROMIUM_VERSION_FULL` and
+1. Constructs the four filenames from `CHROMIUM_VERSION_FULL` and
    `CHROMIUM_VERSION_UPSTREAM`.
 2. Downloads each from `${UPSTREAM_RELEASE_URL}/<filename>` (defaults
    to this repo's release; can be overridden by setting
    `UPSTREAM_RELEASE_URL` in the environment, useful for forks or
    air-gapped mirrors).
-3. SHA256-verifies each against constants compiled into `build.sh`.
+3. SHA256-verifies each against constants compiled into `cli.sh`.
 4. Aborts if any checksum mismatches.
 5. Runs `dpkg-source -x <dsc>` to extract.
 
@@ -75,16 +88,20 @@ re-base our patches onto it:
    shift; sometimes upstream changes break a patch entirely).
 2. **Iterate locally** until a full build produces a .deb and the
    binary plays HEVC correctly on a Pi.
-3. **Vendor the new source files.** Download all three from
+3. **Vendor the new source files.** Download all files listed in the
+   `.dsc`'s `Files:`/`Checksums-Sha256:` blocks (as of 151.x: orig,
+   orig-pre-gen, debian — don't assume it's still exactly three; the
+   set has changed once already) from
    `archive.raspberrypi.com/debian/pool/main/c/chromium/`, compute
    SHA256, and verify they match the `.dsc` file's
    `Checksums-Sha256:` block.
 4. **Cut a new GitHub Release** named
-   `upstream-source-<new-version>` on this repo and upload all three
-   as assets, with the SHA256s in the release notes.
-5. **Update `build/build.sh`**: bump
+   `upstream-source-<new-version>` on this repo and upload all
+   vendored files as assets, with the SHA256s in the release notes.
+5. **Update `build/cli.sh`**: bump
    `CHROMIUM_VERSION_FULL`, `CHROMIUM_VERSION_UPSTREAM`,
-   `UPSTREAM_RELEASE_URL`, and the three SHA256 constants.
+   `UPSTREAM_RELEASE_URL_DEFAULT`, and the SHA256 constants (add/remove
+   constants if the `.dsc`'s component list changed).
 6. **Update `build/Dockerfile`** with the current `debian:trixie`
    manifest digest if the base image has rolled (often unnecessary).
 7. **Update this document** with the new pinned version.
@@ -94,10 +111,11 @@ re-base our patches onto it:
 
 ```bash
 # Inside the build container after STAGE 1, you should see:
-#   ok: chromium_147.0.7727.116.orig.tar.xz (b808992f...)
-#   ok: chromium_147.0.7727.116-1~deb13u1+rpt1.debian.tar.xz (a8845002...)
-#   ok: chromium_147.0.7727.116-1~deb13u1+rpt1.dsc (b0ac0f71...)
-sha256sum /build/src/chromium_*.{orig.tar.xz,debian.tar.xz,dsc}
+#   ok: chromium_151.0.7922.173.orig.tar.xz (d0330f43...)
+#   ok: chromium_151.0.7922.173.orig-pre-gen.tar.xz (46554867...)
+#   ok: chromium_151.0.7922.173-1~deb13u1+rpt1.debian.tar.xz (cd86eb18...)
+#   ok: chromium_151.0.7922.173-1~deb13u1+rpt1.dsc (461a55d3...)
+sha256sum /build/src/chromium_*.{orig.tar.xz,orig-pre-gen.tar.xz,debian.tar.xz,dsc}
 ```
 
 The same SHA256s also appear in the `Checksums-Sha256:` block of

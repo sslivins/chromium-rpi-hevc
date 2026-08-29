@@ -16,8 +16,8 @@ diff --git a/ui/ozone/common/native_pixmap_egl_binding.cc b/ui/ozone/common/nati
 index 393e892..151bd73 100644
 --- a/ui/ozone/common/native_pixmap_egl_binding.cc
 +++ b/ui/ozone/common/native_pixmap_egl_binding.cc
-@@ -223,6 +223,32 @@ bool NativePixmapEGLBinding::InitializeFromNativePixmap(
-     attrs.push_back(pixmap->GetDmaBufOffset(pixmap_plane));
+@@ -229,6 +229,32 @@ bool NativePixmapEGLBinding::InitializeFromNativePixmap(
+     PushEGLintOrDie(pixmap->GetDmaBufOffset(pixmap_plane), attrs);
      attrs.push_back(EGL_DMA_BUF_PLANE0_PITCH_EXT);
      attrs.push_back(pixmap->GetDmaBufPitch(pixmap_plane));
 +
