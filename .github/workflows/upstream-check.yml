@@ -94,7 +94,7 @@ jobs:
           BEST_TAG_VER="${BEST/~deb13u1/_deb13u1}"
           BEST_URL_VER="${BEST_TAG_VER//+/%2B}"
           BODY="$(cat <<EOF
-          A newer chromium release is available from RPi-Distro.
+          @sslivins — a newer chromium release is available from RPi-Distro.
 
           | Source | Version |
           | --- | --- |
@@ -117,4 +117,5 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "${TITLE}" \
             --label upstream-update \
+            --assignee sslivins \
             --body "${BODY}"
