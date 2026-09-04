@@ -65,13 +65,13 @@ readonly PATCHES_DIR=/patches
 readonly STAMP_PATCH_FP="$SRC_DIR/.local-hevc-patch-fp"
 readonly STAMP_RULES_TAIL="$SRC_DIR/.local-hevc-rules-tail-applied"
 
-readonly CHROMIUM_VERSION_FULL="151.0.7922.173-1~deb13u1+rpt1"
-readonly CHROMIUM_VERSION_UPSTREAM="151.0.7922.173"
-readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-151.0.7922.173"
-readonly SHA256_ORIG="d0330f43015f2538a69bdb66a13a9f955f44c8dbc1bcaed4452d54858ee0709c"
-readonly SHA256_ORIG_PREGEN="4655486724e0f2765949d439d8e8caee4801ce47ed9f2bd52bcb8236fbecdeb6"
-readonly SHA256_DEBIAN="cd86eb18db8ef45467464d9c89dc121a782f940934ecccb194479d371ff825dc"
-readonly SHA256_DSC="461a55d3bdef2e58078159a010fb41b23f9f5bc834f36155de565b4d0dbd4238"
+readonly CHROMIUM_VERSION_FULL="152.0.7977.75-1~deb13u1+rpt1"
+readonly CHROMIUM_VERSION_UPSTREAM="152.0.7977.75"
+readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-152.0.7977.75"
+readonly SHA256_ORIG="971e45816002d400a559cca507d311aa9b01a3f59cf1e679b5882e873694c40a"
+readonly SHA256_ORIG_PREGEN="44ca79343649fbd31955bc3c9aa0a3b53a065468135da1fc9fcd7871d147cb28"
+readonly SHA256_DEBIAN="c02f90ebd0ee3b33f338b76219c78e624ba6e204f2c480d48f80bd76c870d35b"
+readonly SHA256_DSC="fd8041126957160f9ba9433be0a75c04157395740a001270db6a1c18d8139c22"
 
 # These are deliberately marker text; we both append them to debian/rules and
 # grep for them to detect whether the rules-tail has been applied.
