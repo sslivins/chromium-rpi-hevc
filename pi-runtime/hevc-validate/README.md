@@ -62,3 +62,32 @@ Useful flags:
 * `--only 8bit,hdr` — run a subset
 * `--shots 5` — more captures per clip (spaced 1 s)
 * `--settle 5` — wait longer after playback starts before capturing
+
+## Self-test
+
+A validator that can only ever return PASS is worthless, so `selftest.py`
+synthesises each failure mode — black screen, frozen playback, unstable
+static band, swapped colour channels, injected 128 px chroma banding — and
+asserts the corresponding check actually goes red:
+
+```bash
+python3 selftest.py
+```
+
+Needs only `numpy` and `pillow`; no display, no chromium, no root.
+
+## Reference result
+
+Chromium `1:151.0.7922.173-1~deb13u1+rpt1` on a Pi 5 (`agora` image),
+all three clips passing, shows the shape of a healthy run:
+
+```
+hw_decode  open_v4l2_nodes=["/dev/media2", "/dev/video19"]
+           v4l2_decoder_log_lines=951  software_fallback_hits=0
+playback   total_video_frames=173  dropped=0  corrupted=0  1920x1080
+```
+
+`/dev/video19` is the Pi 5 stateless HEVC decoder. If that node is absent
+from `open_v4l2_nodes`, the build is decoding in software no matter how good
+the picture looks.
+
