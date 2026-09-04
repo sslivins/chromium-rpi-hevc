@@ -310,6 +310,47 @@ EOF
     fi
 }
 
+_enable_rust_compat_patches() {
+    # RPi/Debian ship per-rustc-version compatibility patch sets in
+    # debian/patches/rust-<major>.<minor>/ but disable them in the series,
+    # because their builders use rustc-web (>= 1.96 for 152.x) rather than
+    # the distro's stock rustc. rustc-web is not available for trixie/arm64,
+    # so this image builds with Debian trixie's rustc 1.85 and needs the
+    # matching compat set turned back on.
+    #
+    # Keying off the *actual* rustc version is self-limiting: if the image
+    # ever moves to a newer toolchain there will be no matching directory
+    # and nothing gets enabled.
+    local series=debian/patches/series
+    [ -f "$series" ] || return 0
+
+    local rustver
+    rustver=$(rustc --version 2>/dev/null | awk '{print $2}' | cut -d. -f1,2)
+    if [ -z "$rustver" ]; then
+        _log "  rustc not on PATH; skipping rust compat patch selection"
+        return 0
+    fi
+
+    if [ -d "debian/patches/rust-$rustver" ] && grep -q "^#rust-$rustver/" "$series"; then
+        local n
+        n=$(grep -c "^#rust-$rustver/" "$series")
+        sed -i "s|^#\(rust-$rustver/\)|\1|" "$series"
+        _log "  enabled $n rust-$rustver compat patch(es) for rustc $rustver"
+    fi
+
+    # Chromium 152 expects the Rust stdlib to ship adler2; rustc 1.85 still
+    # ships adler, so the sysroot copy of libadler2.rlib fails. The packaging
+    # carries its own workaround for this, likewise disabled upstream.
+    local sysroot
+    sysroot=$(rustc --print sysroot 2>/dev/null || echo /usr)
+    if ! ls "$sysroot"/lib/rustlib/*/lib/libadler2*.rlib >/dev/null 2>&1 \
+        && [ -f debian/patches/trixie/adler1.patch ] \
+        && grep -q '^#trixie/adler1\.patch' "$series"; then
+        sed -i 's|^#\(trixie/adler1\.patch\)|\1|' "$series"
+        _log "  enabled trixie/adler1.patch (rust stdlib ships adler, not adler2)"
+    fi
+}
+
 _apply_patches() {
     local src
     src=$(_require_src_tree)
@@ -360,6 +401,9 @@ _apply_patches() {
         sed -i "/^${marker_begin}$/,/^${marker_end}$/d" debian/patches/series
     fi
     rm -rf "debian/patches/$local_subdir"
+
+    # Enable the packaging's own compat patches for this image's rustc.
+    _enable_rust_compat_patches
 
     # Apply en-US.pak + ccache rules-tail (idempotent).
     _apply_rules_tail
