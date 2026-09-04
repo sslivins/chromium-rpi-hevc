@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HEVCVAL init</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: fill; }
+</style>
+</head>
+<body>
+<video id="v" autoplay muted loop playsinline></video>
+<script>
+// The validator reads playback telemetry out of the window title via
+// `swaymsg -t get_tree`. That keeps the harness free of any devtools /
+// websocket dependency on the Pi.
+(function () {
+  var params = new URLSearchParams(location.search);
+  var clip = params.get('clip') || 'hevc_8bit.mp4';
+  var v = document.getElementById('v');
+  var err = '-';
+  var state = 'init';
+
+  v.addEventListener('playing', function () { state = 'playing'; });
+  v.addEventListener('waiting', function () { state = 'waiting'; });
+  v.addEventListener('stalled', function () { state = 'stalled'; });
+  v.addEventListener('ended', function () { state = 'ended'; });
+  v.addEventListener('error', function () {
+    state = 'error';
+    err = v.error ? String(v.error.code) : 'unknown';
+  });
+
+  v.src = clip;
+  v.play().catch(function (e) { state = 'playfail'; err = String(e && e.name); });
+
+  function tick() {
+    var q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : {};
+    document.title = [
+      'HEVCVAL',
+      'clip=' + clip,
+      'st=' + state,
+      'rs=' + v.readyState,
+      't=' + v.currentTime.toFixed(2),
+      'tvf=' + (q.totalVideoFrames || 0),
+      'dvf=' + (q.droppedVideoFrames || 0),
+      'cvf=' + (q.corruptedVideoFrames || 0),
+      'w=' + v.videoWidth,
+      'h=' + v.videoHeight,
+      'err=' + err
+    ].join(' ');
+    setTimeout(tick, 250);
+  }
+  tick();
+})();
+</script>
+</body>
+</html>
