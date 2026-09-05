@@ -45,6 +45,12 @@
   v.play().catch(function (e) { state = 'playfail'; err = String(e && e.name); });
 
   function tick() {
+    // Event-driven state is unreliable once we seek (a seek can leave us in
+    // 'waiting' even though decode has resumed), so reconcile against the
+    // element's actual readiness before publishing.
+    if (state !== 'error' && state !== 'playfail' && state !== 'ended') {
+      if (!v.paused && v.readyState >= 3) state = 'playing';
+    }
     var q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : {};
     document.title = [
       'HEVCVAL',
