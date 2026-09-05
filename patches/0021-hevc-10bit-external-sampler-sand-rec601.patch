@@ -1,0 +1,104 @@
+From: Steve Slivinski <stesli@github.local>
+Subject: [PATCH] hevc: sample 10-bit SAND128 via combined external sampler + REC601
+
+Fixes a 10-bit HEVC (Main10) black-video regression on the Pi 5 V4L2 HEVC
+path after porting the local patch set from Chromium 147 to 151. Both 10-bit
+SDR (BT.709) and 10-bit HDR (BT.2020/PQ) rendered as uniform black; 8-bit
+NV12 and AV1 were unaffected. Audio was never affected.
+
+Root cause
+----------
+On the Pi 5 the V4L2 stateless HEVC decoder emits BROADCOM SAND128
+column-tiled buffers. 10-bit content is packed as P030 (three 10-bit samples
+per 32-bit word). Mesa v3d can only sample these correctly through a single
+*combined* multi-plane EGLImage bound to an OES external sampler with a YUV
+color-space hint (this is the path Chromium 147 used).
+
+Patch 0015 disabled PrefersExternalSampler for all Linux multi-plane formats
+to fix an unrelated 8-bit NV12 "solid green" bug (kernel >= 6.18). That also
+forced 10-bit onto the per-plane path, where Mesa v3d cannot sample SAND128
+P030: the per-plane single-channel import (R16/GR1616) succeeds at
+eglCreateImage but samples as solid black, and forcing the whole P030 fourcc
+onto a single-plane fd (the earlier patch 0021 attempt) makes eglCreateImage
+fail outright with EGL_BAD_PARAMETER. Neither per-plane variant can render
+10-bit; only the combined external-sampler import works.
+
+Fix
+---
+1. media/gpu/chromeos/mailbox_video_frame_converter.cc: re-enable
+   PrefersExternalSampler on Linux for 10-bit (kP010) *only*. 8-bit NV12
+   keeps the per-plane path (patch 0015) to avoid its solid-green bug.
+
+2. ui/ozone/common/native_pixmap_egl_binding.cc: when the P010->P030 remap
+   fires for a BROADCOM SAND128 buffer, force the EGL YUV color-space hint to
+   REC601. Mesa v3d renders SAND128 P030 black under the REC2020 hint, so
+   BT.2020/HDR frames must still be imported with REC601 here (the DRM/KMS
+   path already forces BT.601 limited range for these overlays).
+
+Validated on Pi 5 (kernel 6.18.34, Mesa 25.0.7, sway 1.10.1): 10-bit SDR and
+10-bit HDR both render full content; per-frame EGL import failure count went
+from 254 to 0. See docs/hevc-advertising-regression-151.md and
+scripts/validate-hevc.sh.
+
+--- a/media/gpu/chromeos/mailbox_video_frame_converter.cc
++++ b/media/gpu/chromeos/mailbox_video_frame_converter.cc
+@@ -252,6 +252,16 @@
+   if (si_format->is_multi_plane()) {
+     si_format->SetPrefersExternalSampler();
+   }
++#elif BUILDFLAG(IS_LINUX)
++  // AGORA_PATCH_0021: external sampler ON for 10-bit P010/P030 only. On Pi5 the
++  // V4L2 HEVC decoder emits BROADCOM SAND128 buffers; Mesa v3d only samples
++  // 10-bit correctly through the combined multi-plane EGLImage + OES external
++  // sampler + YUV color-space hint. The per-plane R16/GR1616 import succeeds at
++  // eglCreateImage but v3d samples it as solid black. 8-bit NV12 renders solid
++  // green through the combined path, so it stays per-plane (patch 0015).
++  if (*si_format == viz::MultiPlaneFormat::kP010) {
++    si_format->SetPrefersExternalSampler();
++  }
+ #endif
+ 
+   auto gpu_memory_buffer_handle = origin_frame->CreateGpuMemoryBufferHandle();
+--- a/ui/ozone/common/native_pixmap_egl_binding.cc
++++ b/ui/ozone/common/native_pixmap_egl_binding.cc
+@@ -110,6 +110,7 @@
+   attrs.push_back(EGL_HEIGHT);
+   attrs.push_back(size_.height());
+   attrs.push_back(EGL_LINUX_DRM_FOURCC_EXT);
++  bool is_broadcom_sand_p030 = false;
+   {
+     uint32_t fcc = GetFourCCFormatFromSharedImageFormat(format_);
+     // PATCH_EGL_NC30: Mesa v3d on Pi 5 only accepts BROADCOM SAND128 with
+@@ -119,6 +120,7 @@
+     if (fcc == DRM_FORMAT_P010 && (mod >> 56) == 7 /* BROADCOM */) {
+       LOG(WARNING) << "PATCH_EGL_NC30: remapping P010 -> P030 for BROADCOM modifier";
+       fcc = DRM_FORMAT_P030;
++      is_broadcom_sand_p030 = true;
+     }
+     attrs.push_back(fcc);
+   }
+@@ -142,12 +144,18 @@
+     // promoted to overlays). We'll need to revisit this once we plumb the
+     // color space and range to DRM/KMS.
+     attrs.push_back(EGL_YUV_COLOR_SPACE_HINT_EXT);
+-    switch (color_space.GetMatrixID()) {
+-      case gfx::ColorSpace::MatrixID::BT2020_NCL:
+-        attrs.push_back(EGL_ITU_REC2020_EXT);
+-        break;
+-      default:
+-        attrs.push_back(EGL_ITU_REC601_EXT);
++    // AGORA_PATCH_0021: Mesa v3d cannot sample BROADCOM SAND128 P030 with the
++    // REC2020 YUV hint (renders black); force REC601 for our Pi5 HEVC buffers.
++    if (is_broadcom_sand_p030) {
++      attrs.push_back(EGL_ITU_REC601_EXT);
++    } else {
++      switch (color_space.GetMatrixID()) {
++        case gfx::ColorSpace::MatrixID::BT2020_NCL:
++          attrs.push_back(EGL_ITU_REC2020_EXT);
++          break;
++        default:
++          attrs.push_back(EGL_ITU_REC601_EXT);
++      }
+     }
+ 
+     attrs.push_back(EGL_SAMPLE_RANGE_HINT_EXT);

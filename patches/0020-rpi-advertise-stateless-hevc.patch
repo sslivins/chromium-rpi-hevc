@@ -1,0 +1,52 @@
+Description: re-advertise the stateless HEVC V4L2 decoder on RPi builds
+ RPi-Distro's new-in-151 rpi/v4l2-do-not-advertise-stateless-codecs.patch
+ adds an IsStatelessDecoder() check inside GetSupportedV4L2DecoderConfigs()
+ (media/gpu/v4l2/v4l2_utils.cc): for every candidate device it issues
+ VIDIOC_REQBUFS(count=0) on the OUTPUT_MPLANE queue and, if the queue reports
+ V4L2_BUF_CAP_SUPPORTS_REQUESTS, `continue`s -- skipping the device so its
+ codecs are never advertised.
+ .
+ On a Pi 5 the stateless HEVC decoder is /dev/video19, whose OUTPUT_MPLANE
+ queue reports SUPPORTS_REQUESTS (REQBUFS capabilities = 0x1d). RPi added the
+ skip because THEIR build only wires up the stateful decoder
+ (V4L2StatefulVideoDecoder) and cannot drive the stateless path, so
+ advertising HEVC there makes canPlayType() answer "probably" and then
+ playback dies. OUR build DOES drive the stateless HEVC decoder (local
+ patches 0001/0005 et al. wire up V4L2VideoDecoder + the H.265 slice-params
+ delegate), so this suppression instead breaks working HEVC: canPlayType()
+ returns "" and the demuxer rejects the stream with
+ DEMUXER_ERROR_NO_SUPPORTED_STREAMS. This is the root cause of the 147->151
+ HEVC regression (the patch did not exist in RPi's 147 packaging).
+ .
+ Gate both the IsStatelessDecoder() definition and its call site behind
+ !BUILDFLAG(USE_V4L2_CODEC_RPI) so that on our RPi V4L2 builds the check
+ compiles out entirely (no skip, no unused-function warning) and the HEVC
+ device is advertised again exactly as in 147; non-RPi Linux builds keep
+ RPi-Distro's original behavior. Owning this decision in our own local patch
+ means any future RPi rebase that re-introduces or churns the suppression is
+ either neutralized by this patch or fails loudly at patch-apply time rather
+ than silently shipping broken HEVC. See
+ docs/hevc-advertising-regression-151.md.
+Author: chromium-rpi-hevc
+Forwarded: not-needed
+
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -642,7 +642,7 @@
+           .tv_usec = base::checked_cast<__suseconds_t>(tv_usec)};
+ }
+ 
+-#if !BUILDFLAG(IS_CHROMEOS)
++#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(USE_V4L2_CODEC_RPI)
+ // A stateless decoder drives the hardware per slice and needs the Request API
+ // to submit its controls, which only V4L2VideoDecoder implements; outside
+ // ChromeOS the sole decoder wired up is V4L2StatefulVideoDecoder. Asking for
+@@ -695,7 +695,7 @@
+       continue;
+     }
+ 
+-#if !BUILDFLAG(IS_CHROMEOS)
++#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(USE_V4L2_CODEC_RPI)
+     // Advertising codecs from a device no decoder here can drive makes the
+     // renderer pick one and then fail outright, where reporting it unsupported
+     // lets the site fall back to a codec that works. On a Raspberry Pi 4 that
