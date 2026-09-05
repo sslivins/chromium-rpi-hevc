@@ -763,6 +763,11 @@ _cmd_ninja() {
 }
 
 # Mirror debian/rules' override_dh_auto_build-arch output renames.
+_build_id() {
+    [ -f "$1" ] || return 0
+    readelf -n "$1" 2>/dev/null | awk '/Build ID/ { print $NF }'
+}
+
 _rename_for_packaging() {
     local pair src dst
     for pair in "chrome:chromium" "content_shell:chromium-shell" \
@@ -897,6 +902,34 @@ _cmd_debs() {
         _die "chromium-l10n still contains usr/lib/chromium/locales/en-US.pak (en-US.pak fix did not take effect)"
     fi
     _log "  ok: chromium-l10n does NOT contain en-US.pak (collision fixed)"
+
+    _step "STAGE 7: verify the .deb ships THIS build"
+    # dpkg-buildpackage runs with -nc, so debian/rules' output renames can be
+    # skipped and dh_install can package a stale out/Release/chromium left by an
+    # earlier build. That silently shipped a binary with no HEVC advertising
+    # once (2026-09-05), and it is invisible until the .deb is on a Pi. Compare
+    # build IDs so it fails here instead.
+    local chromium_deb="$OUT_DIR/chromium_${CHROMIUM_VERSION_FULL}_arm64.deb"
+    if [ ! -f "$chromium_deb" ]; then
+        chromium_deb=$(ls -t "$OUT_DIR"/chromium_*_arm64.deb 2>/dev/null | head -1 || true)
+    fi
+    [ -n "$chromium_deb" ] && [ -f "$chromium_deb" ] || _die "chromium .deb missing"
+    local built_id packaged_id tmpd
+    built_id=$(_build_id "$SRC_DIR/out/Release/chrome")
+    tmpd=$(mktemp -d)
+    dpkg-deb --fsys-tarfile "$chromium_deb" \
+        | tar -xO ./usr/lib/chromium/chromium > "$tmpd/chromium" 2>/dev/null || true
+    packaged_id=$(_build_id "$tmpd/chromium")
+    rm -rf "$tmpd"
+    _log "  built    out/Release/chrome: ${built_id:-<none>}"
+    _log "  packaged $(basename "$chromium_deb"): ${packaged_id:-<none>}"
+    [ -n "$built_id" ]    || _die "no build ID in out/Release/chrome"
+    [ -n "$packaged_id" ] || _die "no build ID in the packaged chromium binary"
+    if [ "$built_id" != "$packaged_id" ]; then
+        _die "the .deb does NOT contain this build (stale out/Release/chromium). \
+Re-run after 'cli.sh ninja', which mirrors the packaging renames."
+    fi
+    _log "  ok: packaged binary is this build"
 
     # Run cleanup explicitly while locals (build_pid/tail_pid/trip_pid) are
     # still in scope. _debs_cleanup untraps EXIT/INT/TERM internally so the
