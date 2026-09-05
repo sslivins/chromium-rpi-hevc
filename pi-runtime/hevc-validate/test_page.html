@@ -17,6 +17,10 @@
 (function () {
   var params = new URLSearchParams(location.search);
   var clip = params.get('clip') || 'hevc_8bit.mp4';
+  // Optional playback window, used to replay a suspect region of a long clip
+  // over and over instead of waiting for it to come round on a full loop.
+  var startAt = parseFloat(params.get('start'));
+  var endAt = parseFloat(params.get('end'));
   var v = document.getElementById('v');
   var err = '-';
   var state = 'init';
@@ -31,6 +35,13 @@
   });
 
   v.src = clip;
+  if (!isNaN(startAt)) {
+    v.addEventListener('loadedmetadata', function () { v.currentTime = startAt; });
+    v.addEventListener('timeupdate', function () {
+      var lim = isNaN(endAt) ? Infinity : endAt;
+      if (v.currentTime > lim || v.currentTime < startAt - 1) v.currentTime = startAt;
+    });
+  }
   v.play().catch(function (e) { state = 'playfail'; err = String(e && e.name); });
 
   function tick() {

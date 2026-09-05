@@ -282,6 +282,8 @@ def run_clip(
     settle: float,
     extra_flags: list[str] | None = None,
     drop_flags: list[str] | None = None,
+    start: float | None = None,
+    end: float | None = None,
 ) -> dict:
     out_dir = workdir / label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -291,6 +293,10 @@ def run_clip(
         shutil.rmtree(profile_dir, ignore_errors=True)
 
     url = f"file://{clip_dir}/test_page.html?clip={clip}"
+    if start is not None:
+        url += f"&start={start}"
+        if end is not None:
+            url += f"&end={end}"
     cmd = [
         CHROMIUM,
         "--no-sandbox",
@@ -475,6 +481,14 @@ def main() -> int:
     ap.add_argument("--only", default="", help="comma-separated labels to run")
     ap.add_argument("--keep-agora-down", action="store_true")
     ap.add_argument(
+        "--start", type=float, default=None,
+        help="seek to this offset (seconds) and replay from there",
+    )
+    ap.add_argument(
+        "--end", type=float, default=None,
+        help="with --start, loop back to --start once past this offset",
+    )
+    ap.add_argument(
         "--extra-flag",
         action="append",
         default=[],
@@ -525,6 +539,8 @@ def main() -> int:
                     args.shots, args.settle,
                     extra_flags=args.extra_flag,
                     drop_flags=args.drop_flag,
+                    start=args.start,
+                    end=args.end,
                 )
             )
     except Exception as exc:  # noqa: BLE001
