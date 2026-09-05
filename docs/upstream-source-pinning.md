@@ -1,15 +1,11 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:151.0.7922.173-1~deb13u1+rpt1`. The patches under
-`patches/` were rebased and reviewed against Chromium
-151.0.7922.137 (git tag `151.0.7922.137` on
-chromium.googlesource.com); the vendored/pinned build source is the
-next RPi-Distro `+rpt1` trixie release available at the time of
-vendoring, 151.0.7922.173. These are both within the 151.0.7922.x
-patch train, so no further source-level drift is expected between
-them, but this has not been build-verified — if `cli.sh patch` fails
-on a hunk, check whether upstream changed between .137 and .173 first.
+version: `1:152.0.7977.75-1~deb13u1+rpt1`. The patches under
+`patches/` were rebased onto, built against, and validated on Pi 5
+hardware with this exact version, so unlike the 151 pin there is no
+gap between the version the patches were reviewed against and the
+version that is built.
 
 This document explains how the pin works, why it exists, and how to
 move it forward when the time comes.
@@ -21,8 +17,8 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~905 MB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-151.0.7922.173`, with SHA256 in `build/cli.sh` |
-| Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component new as of the 151.x `.dsc` (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
+| Chromium source (`*.orig.tar.xz`, ~905 MB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-152.0.7977.75`, with SHA256 in `build/cli.sh` |
+| Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component introduced by the 151.x `.dsc` and still present in 152.x (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
 
@@ -86,10 +82,28 @@ re-base our patches onto it:
    tree into our quilt environment, and try to apply each of our
    patches in order. Fix conflicts manually (patch hunk offsets
    shift; sometimes upstream changes break a patch entirely).
+
+   **Cut the port branch from `main`, and verify it.** The 152 port
+   branch was cut from a stale base and silently lost two patches
+   (`0020-rpi-advertise-stateless-hevc`,
+   `0021-hevc-10bit-external-sampler-sand-rec601`), which cost a full
+   rebuild to rediscover. The build succeeds and HEVC simply is not
+   advertised. Before building, confirm the only patch differences are
+   ones you intended:
+
+   ```bash
+   git diff --stat origin/main..HEAD -- patches
+   ```
+
+   Also check for number collisions — a new patch reusing an existing
+   number silently displaces the original in the quilt series.
 2. **Iterate locally** until a full build produces a .deb and the
-   binary plays HEVC correctly on a Pi.
+   binary plays HEVC correctly on a Pi. `cli.sh debs` STAGE 7 fails the
+   build if the .deb does not contain the binary just compiled; do not
+   bypass it, since that check exists because a stale binary shipped
+   once.
 3. **Vendor the new source files.** Download all files listed in the
-   `.dsc`'s `Files:`/`Checksums-Sha256:` blocks (as of 151.x: orig,
+   `.dsc`'s `Files:`/`Checksums-Sha256:` blocks (as of 152.x: orig,
    orig-pre-gen, debian — don't assume it's still exactly three; the
    set has changed once already) from
    `archive.raspberrypi.com/debian/pool/main/c/chromium/`, compute
@@ -111,10 +125,10 @@ re-base our patches onto it:
 
 ```bash
 # Inside the build container after STAGE 1, you should see:
-#   ok: chromium_151.0.7922.173.orig.tar.xz (d0330f43...)
-#   ok: chromium_151.0.7922.173.orig-pre-gen.tar.xz (46554867...)
-#   ok: chromium_151.0.7922.173-1~deb13u1+rpt1.debian.tar.xz (cd86eb18...)
-#   ok: chromium_151.0.7922.173-1~deb13u1+rpt1.dsc (461a55d3...)
+#   ok: chromium_152.0.7977.75.orig.tar.xz (971e4581...)
+#   ok: chromium_152.0.7977.75.orig-pre-gen.tar.xz (44ca7934...)
+#   ok: chromium_152.0.7977.75-1~deb13u1+rpt1.debian.tar.xz (c02f90eb...)
+#   ok: chromium_152.0.7977.75-1~deb13u1+rpt1.dsc (fd804112...)
 sha256sum /build/src/chromium_*.{orig.tar.xz,orig-pre-gen.tar.xz,debian.tar.xz,dsc}
 ```
 
@@ -125,15 +139,17 @@ recorded but did not generate.
 ## Independent provenance check
 
 The RPi-Distro `debian/` overlay (`*.debian.tar.xz`) is
-content-equivalent to the GitHub tag
-[`pios/1%147.0.7727.116-1_deb13u1+rpt1`](https://github.com/RPi-Distro/chromium/tree/pios/1%25147.0.7727.116-1_deb13u1+rpt1)
-(commit `c5a65d9`). If our release is ever lost, this tag is a
-permanent independent record of what we patched against — extract
-the GitHub tag's `debian/` directory, repackage as a `.tar.xz`, and
-the SHA256 should match.
+content-equivalent to the matching tag in the
+[RPi-Distro/chromium](https://github.com/RPi-Distro/chromium) repo,
+named `pios/1%<upstream-version>-1_deb13u1+rpt1`. If our release is
+ever lost, that tag is a permanent independent record of what we
+patched against — extract the tag's `debian/` directory, repackage as
+a `.tar.xz`, and the SHA256 should match. This was verified for the
+147 pin (tag `pios/1%147.0.7727.116-1_deb13u1+rpt1`, commit
+`c5a65d9`); the equivalent 152 tag has not been byte-verified.
 
 The upstream chromium tarball (`*.orig.tar.xz`) is a repackage of
 Google's upstream chromium release. Google's own snapshots are at
-`https://commondatastorage.googleapis.com/chromium-browser-official/chromium-147.0.7727.116.tar.xz`
+`https://commondatastorage.googleapis.com/chromium-browser-official/chromium-<version>.tar.xz`
 or similar paths, but RPi sometimes runs `xz -e` re-compression which
 changes the SHA256. Treat our release as the authoritative copy.
