@@ -931,7 +931,7 @@ _cmd_debs() {
     fi
     [ -n "$chromium_deb" ] && [ -f "$chromium_deb" ] || _die "chromium .deb missing"
     local built_id packaged_id tmpd
-    built_id=$(_build_id "$SRC_DIR/out/Release/chrome")
+    built_id=$(_build_id "$src/out/Release/chrome")
     tmpd=$(mktemp -d)
     dpkg-deb --fsys-tarfile "$chromium_deb" \
         | tar -xO ./usr/lib/chromium/chromium > "$tmpd/chromium" 2>/dev/null || true
@@ -939,7 +939,7 @@ _cmd_debs() {
     rm -rf "$tmpd"
     _log "  built    out/Release/chrome: ${built_id:-<none>}"
     _log "  packaged $(basename "$chromium_deb"): ${packaged_id:-<none>}"
-    [ -n "$built_id" ]    || _die "no build ID in out/Release/chrome"
+    [ -n "$built_id" ]    || _die "no build ID in $src/out/Release/chrome"
     [ -n "$packaged_id" ] || _die "no build ID in the packaged chromium binary"
     if [ "$built_id" != "$packaged_id" ]; then
         _die "the .deb does NOT contain this build (stale out/Release/chromium). \
