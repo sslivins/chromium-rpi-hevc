@@ -78,6 +78,26 @@ def service_active(name: str) -> bool:
     return run(["systemctl", "is-active", "--quiet", name]).returncode == 0
 
 
+def kill_stale_sessions() -> None:
+    """Reap sway/chromium survivors from an earlier run.
+
+    A leftover compositor keeps the DRM master, so our sway comes up without a
+    real output and every clip fails to reach `playing` -- which looks exactly
+    like a codec regression. Clearing them first is the difference between a
+    trustworthy result and a day of chasing the wrong bug.
+    """
+    victims = []
+    for name in ("chromium", "swaybg", "sway"):
+        out = run(["pgrep", "-x", name]).stdout.split()
+        victims += [(name, int(p)) for p in out if p.isdigit()]
+    if not victims:
+        return
+    log(f"killing {len(victims)} stale process(es) from a previous run")
+    for _, pid in victims:
+        run(["kill", "-9", str(pid)])
+    time.sleep(2)
+
+
 def stop_agora() -> list[str]:
     stopped = []
     for svc in AGORA_SERVICES:
@@ -87,6 +107,7 @@ def stop_agora() -> list[str]:
             stopped.append(svc)
     # The player owns sway; give the compositor time to release the DRM master.
     time.sleep(3)
+    kill_stale_sessions()
     return stopped
 
 
@@ -259,6 +280,8 @@ def run_clip(
     workdir: Path,
     shots: int,
     settle: float,
+    extra_flags: list[str] | None = None,
+    drop_flags: list[str] | None = None,
 ) -> dict:
     out_dir = workdir / label
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -290,6 +313,14 @@ def run_clip(
         url,
     ]
 
+    # --drop-flag lets a caller remove a baked-in switch by prefix, so the
+    # decoder path can be A/B'd without editing this file. --extra-flag then
+    # appends replacements. Both are recorded in the report.
+    for prefix in drop_flags or []:
+        cmd = [c for c in cmd if not c.startswith(prefix)]
+    if extra_flags:
+        cmd = cmd[:-1] + list(extra_flags) + [cmd[-1]]
+
     log(f"[{label}] launching chromium")
     with open(stderr_path, "wb") as errf:
         proc = subprocess.Popen(
@@ -301,6 +332,8 @@ def run_clip(
         )
 
     result: dict = {"label": label, "clip": clip, "profile": profile}
+    if extra_flags or drop_flags:
+        result["flag_overrides"] = {"extra": extra_flags or [], "dropped": drop_flags or []}
     captures: list[str] = []
     try:
         deadline = time.time() + 60
@@ -441,6 +474,18 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--only", default="", help="comma-separated labels to run")
     ap.add_argument("--keep-agora-down", action="store_true")
+    ap.add_argument(
+        "--extra-flag",
+        action="append",
+        default=[],
+        help="extra chromium switch (repeatable)",
+    )
+    ap.add_argument(
+        "--drop-flag",
+        action="append",
+        default=[],
+        help="drop any baked-in chromium switch starting with this prefix (repeatable)",
+    )
     args = ap.parse_args()
 
     if os.geteuid() != 0:
@@ -475,7 +520,12 @@ def main() -> int:
         sway.start()
         for label, clip, profile in clips:
             report["results"].append(
-                run_clip(sway, label, clip, profile, clip_dir, workdir, args.shots, args.settle)
+                run_clip(
+                    sway, label, clip, profile, clip_dir, workdir,
+                    args.shots, args.settle,
+                    extra_flags=args.extra_flag,
+                    drop_flags=args.drop_flag,
+                )
             )
     except Exception as exc:  # noqa: BLE001
         report["error"] = f"{type(exc).__name__}: {exc}"

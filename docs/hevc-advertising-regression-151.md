@@ -164,3 +164,37 @@ and silently disables our HEVC." Mitigations, in priority order:
   before any CAPTURE-format handling matters).
 - Relocate the `[HEVC_DBG]` VLOGs (patch 0005) behind a runtime debug flag
   so production builds are quiet.
+
+## Recurrence on the 152 port (2026-09-05)
+
+The exact same symptom reappeared on Chromium 152: `canPlayType` returned
+`no` for every HEVC profile, and an `strace -e trace=openat,ioctl` of the
+GPU process showed a single `VIDIOC_REQBUFS(count=0, OUTPUT_MPLANE)` against
+`/dev/video19` followed by no `VIDIOC_ENUM_FMT` — the signature of
+`IsStatelessDecoder()` returning true and `continue`-ing.
+
+**Cause was not upstream churn.** The `chromium-152-patch-port` branch was
+cut from a base that predated PR #64, so it never contained the fix:
+`patches/0020-rpi-advertise-stateless-hevc.patch` and
+`patches/0021-hevc-10bit-external-sampler-sand-rec601.patch` were simply
+absent from the branch, and a new local patch had reused the number `0020`.
+Restoring both patches (rustfft renumbered to `0022`) and rebuilding restored
+`hevc_main/hevc_main10 = probably`, `decodingInfo hevc = hw`, and 8-bit /
+10-bit / HDR playback all PASS on Pi100.
+
+**Lesson.** The counter-patch mechanism worked exactly as designed on 151;
+what failed was branch hygiene. When starting a new upstream port branch,
+diff `patches/` against `main` before the first build:
+
+```sh
+git diff --stat origin/main..HEAD -- patches
+```
+
+Any patch present on `main` and missing on the port branch is a bug unless
+its removal is deliberate and explained in the commit message.
+
+**Smoke check.** `pi-runtime/hevc-validate/diag_codecs.py` is the cheap
+(~40 s) assertion recommended in the maintainability section above: it
+reports `canPlayType` and `navigator.mediaCapabilities.decodingInfo` for
+HEVC/H.264/VP9/AV1 and, with `DIAG_STRACE=1`, captures the `/dev/video*`
+ioctl sequence. Run it before the full `validate.py` on every new build.

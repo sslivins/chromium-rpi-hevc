@@ -746,6 +746,34 @@ _cmd_ninja() {
         cp out/Release/chrome "$OUT_DIR/chromium"
         _log "Copied chromium binary to $OUT_DIR/chromium ($(stat -c %s "$OUT_DIR/chromium") bytes)"
     fi
+
+    # debian/rules' override_dh_auto_build-arch renames the GN outputs before
+    # dh_install picks them up:
+    #     cp out/Release/chrome         out/Release/chromium
+    #     cp out/Release/content_shell  out/Release/chromium-shell
+    #     cp out/Release/headless_shell out/Release/chromium-headless-shell
+    # `debs` runs dpkg-buildpackage with -nc, which SKIPS the build target
+    # entirely -- so those copies never happen on an incremental run and the
+    # .deb silently ships whatever stale out/Release/chromium was left behind
+    # by the last full build. That shipped a binary with no HEVC advertising
+    # once already (2026-09-05); verify with:
+    #     readelf -n out/Release/chromium | grep "Build ID"
+    # Mirror the renames here so ninja -> debs always packages this build.
+    _rename_for_packaging
+}
+
+# Mirror debian/rules' override_dh_auto_build-arch output renames.
+_rename_for_packaging() {
+    local pair src dst
+    for pair in "chrome:chromium" "content_shell:chromium-shell" \
+                "headless_shell:chromium-headless-shell"; do
+        src="out/Release/${pair%%:*}"
+        dst="out/Release/${pair##*:}"
+        if [ -f "$src" ] && ! cmp -s "$src" "$dst"; then
+            cp "$src" "$dst"
+            _log "packaging rename: $src -> $dst"
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -785,6 +813,9 @@ _cmd_debs() {
     : > "$build_log"
     : > "$trip_log"
     if [ "$NO_CCACHE" != "1" ]; then ccache --zero-stats >/dev/null; fi
+
+    # -nc skips debian/rules build, so the packaging renames never run.
+    _rename_for_packaging
 
     _step "STAGE 4: dpkg-buildpackage (long; hours)"
     _log "Using $JOBS parallel jobs."
