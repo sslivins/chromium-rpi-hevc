@@ -93,6 +93,22 @@ _log()  { printf '%s %s\n' "[$(date -u +%H:%M:%S)]" "$*"; }
 _step() { printf '\n=== %s ===\n' "$*"; }
 _die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
 
+# Reap only the background jobs we started, by pid.
+#
+# A bare `wait` MUST NOT be used anywhere in this script. _setup_logging runs
+# `exec > >(tee -a "$_LOG_PATH")`, and bash tracks that process substitution as
+# a child job. A bare `wait` therefore blocks on tee, while tee blocks reading
+# our stdout, which stays open for as long as we are alive: a permanent
+# deadlock. It hung the first clean full build (2026-09-05) for 35 minutes
+# after dpkg-buildpackage had already succeeded, with STAGE 5-7 never running.
+_reap() {
+    local p
+    for p in "$@"; do
+        [ -n "$p" ] || continue
+        wait "$p" 2>/dev/null || true
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Common setup — env vars used by both `fast` (direct ninja) and `debs`
 # (dpkg-buildpackage) paths. These match upstream debian/rules expectations.
@@ -732,7 +748,7 @@ _cmd_ninja() {
     set -e
     [ -n "$trip_pid" ] && kill "$trip_pid" 2>/dev/null || true
     kill "$tail_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
+    _reap "$trip_pid" "$tail_pid"
     trap - EXIT INT TERM
 
     _step "ccache stats (post-ninja)"
@@ -865,7 +881,7 @@ _cmd_debs() {
     set -e
     [ -n "$trip_pid" ] && kill "$trip_pid" 2>/dev/null || true
     kill "$tail_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
+    _reap "$trip_pid" "$tail_pid"
 
     _step "ccache stats (post-build)"
     ccache -s --verbose 2>/dev/null | head -30 || ccache -s
