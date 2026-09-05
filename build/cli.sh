@@ -331,11 +331,9 @@ _enable_rust_compat_patches() {
         return 0
     fi
 
+    local want_rustset="no" want_adler="no"
     if [ -d "debian/patches/rust-$rustver" ] && grep -q "^#rust-$rustver/" "$series"; then
-        local n
-        n=$(grep -c "^#rust-$rustver/" "$series")
-        sed -i "s|^#\(rust-$rustver/\)|\1|" "$series"
-        _log "  enabled $n rust-$rustver compat patch(es) for rustc $rustver"
+        want_rustset="yes"
     fi
 
     # Chromium 152 expects the Rust stdlib to ship adler2; rustc 1.85 still
@@ -346,6 +344,28 @@ _enable_rust_compat_patches() {
     if ! ls "$sysroot"/lib/rustlib/*/lib/libadler2*.rlib >/dev/null 2>&1 \
         && [ -f debian/patches/trixie/adler1.patch ] \
         && grep -q '^#trixie/adler1\.patch' "$series"; then
+        want_adler="yes"
+    fi
+
+    [ "$want_rustset" = "no" ] && [ "$want_adler" = "no" ] && return 0
+
+    # These entries sit in the middle of the series. quilt tracks applied
+    # patches positionally, so enabling them while the tree is patched would
+    # silently skip them (quilt just resumes after the last applied patch).
+    # Pop everything first so the re-apply walks the full, corrected series.
+    if [ -f .pc/applied-patches ] && [ -s .pc/applied-patches ]; then
+        _log "  popping applied patches so re-enabled series entries take effect"
+        QUILT_PATCHES=debian/patches quilt pop -af >/dev/null 2>&1 \
+            || _die "could not unapply patches before enabling rust compat set"
+    fi
+
+    if [ "$want_rustset" = "yes" ]; then
+        local n
+        n=$(grep -c "^#rust-$rustver/" "$series")
+        sed -i "s|^#\(rust-$rustver/\)|\1|" "$series"
+        _log "  enabled $n rust-$rustver compat patch(es) for rustc $rustver"
+    fi
+    if [ "$want_adler" = "yes" ]; then
         sed -i 's|^#\(trixie/adler1\.patch\)|\1|' "$series"
         _log "  enabled trixie/adler1.patch (rust stdlib ships adler, not adler2)"
     fi
