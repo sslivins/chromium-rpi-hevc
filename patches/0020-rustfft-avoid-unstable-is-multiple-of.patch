@@ -1,0 +1,32 @@
+Avoid the unstable `unsigned_is_multiple_of` library feature in Blink's
+rustfft FFI so the tree builds with Debian trixie's stable rustc 1.85.
+
+Chromium 152 added third_party/blink/renderer/platform/audio/rustfft_ffi.rs,
+which calls usize::is_multiple_of(). That was stabilised in rustc 1.87, so
+1.85 rejects it with E0658.
+
+Debian ships debian/patches/rust-1.85/rust-is-multiple-of.patch for the same
+problem, but it only covers two vendored crates (llguidance-v1, toktrie-v1)
+and predates this Blink file. `n % 2 == 0` is exactly equivalent for usize
+and needs no nightly feature gate.
+
+--- a/third_party/blink/renderer/platform/audio/rustfft_ffi.rs
++++ b/third_party/blink/renderer/platform/audio/rustfft_ffi.rs
+@@ -80,7 +80,7 @@
+ /// For even sizes, it initializes the `Even` strategy which uses a half-size
+ /// FFT.
+ pub fn rustfft_new(size: usize) -> Box<RustFft> {
+-    if size.is_multiple_of(2) {
++    if size % 2 == 0 {
+         let half_size = size / 2;
+         let (fft_forward, fft_inverse) = get_fft(half_size);
+         let complex_data = vec![Complex::new(0.0, 0.0); half_size];
+@@ -100,7 +100,7 @@
+             .collect();
+ 
+         let limit = (half_size - 1) / 2;
+-        let middle_index = if half_size.is_multiple_of(2) { Some(half_size / 2) } else { None };
++        let middle_index = if half_size % 2 == 0 { Some(half_size / 2) } else { None };
+ 
+         Box::new(RustFft {
+             strategy: FftStrategy::Even {
