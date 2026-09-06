@@ -65,13 +65,13 @@ readonly PATCHES_DIR=/patches
 readonly STAMP_PATCH_FP="$SRC_DIR/.local-hevc-patch-fp"
 readonly STAMP_RULES_TAIL="$SRC_DIR/.local-hevc-rules-tail-applied"
 
-readonly CHROMIUM_VERSION_FULL="151.0.7922.173-1~deb13u1+rpt1"
-readonly CHROMIUM_VERSION_UPSTREAM="151.0.7922.173"
-readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-151.0.7922.173"
-readonly SHA256_ORIG="d0330f43015f2538a69bdb66a13a9f955f44c8dbc1bcaed4452d54858ee0709c"
-readonly SHA256_ORIG_PREGEN="4655486724e0f2765949d439d8e8caee4801ce47ed9f2bd52bcb8236fbecdeb6"
-readonly SHA256_DEBIAN="cd86eb18db8ef45467464d9c89dc121a782f940934ecccb194479d371ff825dc"
-readonly SHA256_DSC="461a55d3bdef2e58078159a010fb41b23f9f5bc834f36155de565b4d0dbd4238"
+readonly CHROMIUM_VERSION_FULL="152.0.7977.75-1~deb13u1+rpt1"
+readonly CHROMIUM_VERSION_UPSTREAM="152.0.7977.75"
+readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-152.0.7977.75"
+readonly SHA256_ORIG="971e45816002d400a559cca507d311aa9b01a3f59cf1e679b5882e873694c40a"
+readonly SHA256_ORIG_PREGEN="44ca79343649fbd31955bc3c9aa0a3b53a065468135da1fc9fcd7871d147cb28"
+readonly SHA256_DEBIAN="c02f90ebd0ee3b33f338b76219c78e624ba6e204f2c480d48f80bd76c870d35b"
+readonly SHA256_DSC="fd8041126957160f9ba9433be0a75c04157395740a001270db6a1c18d8139c22"
 
 # These are deliberately marker text; we both append them to debian/rules and
 # grep for them to detect whether the rules-tail has been applied.
@@ -92,6 +92,22 @@ CCACHE_DIR_OVERRIDE=""
 _log()  { printf '%s %s\n' "[$(date -u +%H:%M:%S)]" "$*"; }
 _step() { printf '\n=== %s ===\n' "$*"; }
 _die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+
+# Reap only the background jobs we started, by pid.
+#
+# A bare `wait` MUST NOT be used anywhere in this script. _setup_logging runs
+# `exec > >(tee -a "$_LOG_PATH")`, and bash tracks that process substitution as
+# a child job. A bare `wait` therefore blocks on tee, while tee blocks reading
+# our stdout, which stays open for as long as we are alive: a permanent
+# deadlock. It hung the first clean full build (2026-09-05) for 35 minutes
+# after dpkg-buildpackage had already succeeded, with STAGE 5-7 never running.
+_reap() {
+    local p
+    for p in "$@"; do
+        [ -n "$p" ] || continue
+        wait "$p" 2>/dev/null || true
+    done
+}
 
 # ---------------------------------------------------------------------------
 # Common setup — env vars used by both `fast` (direct ninja) and `debs`
@@ -310,6 +326,67 @@ EOF
     fi
 }
 
+_enable_rust_compat_patches() {
+    # RPi/Debian ship per-rustc-version compatibility patch sets in
+    # debian/patches/rust-<major>.<minor>/ but disable them in the series,
+    # because their builders use rustc-web (>= 1.96 for 152.x) rather than
+    # the distro's stock rustc. rustc-web is not available for trixie/arm64,
+    # so this image builds with Debian trixie's rustc 1.85 and needs the
+    # matching compat set turned back on.
+    #
+    # Keying off the *actual* rustc version is self-limiting: if the image
+    # ever moves to a newer toolchain there will be no matching directory
+    # and nothing gets enabled.
+    local series=debian/patches/series
+    [ -f "$series" ] || return 0
+
+    local rustver
+    rustver=$(rustc --version 2>/dev/null | awk '{print $2}' | cut -d. -f1,2)
+    if [ -z "$rustver" ]; then
+        _log "  rustc not on PATH; skipping rust compat patch selection"
+        return 0
+    fi
+
+    local want_rustset="no" want_adler="no"
+    if [ -d "debian/patches/rust-$rustver" ] && grep -q "^#rust-$rustver/" "$series"; then
+        want_rustset="yes"
+    fi
+
+    # Chromium 152 expects the Rust stdlib to ship adler2; rustc 1.85 still
+    # ships adler, so the sysroot copy of libadler2.rlib fails. The packaging
+    # carries its own workaround for this, likewise disabled upstream.
+    local sysroot
+    sysroot=$(rustc --print sysroot 2>/dev/null || echo /usr)
+    if ! ls "$sysroot"/lib/rustlib/*/lib/libadler2*.rlib >/dev/null 2>&1 \
+        && [ -f debian/patches/trixie/adler1.patch ] \
+        && grep -q '^#trixie/adler1\.patch' "$series"; then
+        want_adler="yes"
+    fi
+
+    [ "$want_rustset" = "no" ] && [ "$want_adler" = "no" ] && return 0
+
+    # These entries sit in the middle of the series. quilt tracks applied
+    # patches positionally, so enabling them while the tree is patched would
+    # silently skip them (quilt just resumes after the last applied patch).
+    # Pop everything first so the re-apply walks the full, corrected series.
+    if [ -f .pc/applied-patches ] && [ -s .pc/applied-patches ]; then
+        _log "  popping applied patches so re-enabled series entries take effect"
+        QUILT_PATCHES=debian/patches quilt pop -af >/dev/null 2>&1 \
+            || _die "could not unapply patches before enabling rust compat set"
+    fi
+
+    if [ "$want_rustset" = "yes" ]; then
+        local n
+        n=$(grep -c "^#rust-$rustver/" "$series")
+        sed -i "s|^#\(rust-$rustver/\)|\1|" "$series"
+        _log "  enabled $n rust-$rustver compat patch(es) for rustc $rustver"
+    fi
+    if [ "$want_adler" = "yes" ]; then
+        sed -i 's|^#\(trixie/adler1\.patch\)|\1|' "$series"
+        _log "  enabled trixie/adler1.patch (rust stdlib ships adler, not adler2)"
+    fi
+}
+
 _apply_patches() {
     local src
     src=$(_require_src_tree)
@@ -360,6 +437,9 @@ _apply_patches() {
         sed -i "/^${marker_begin}$/,/^${marker_end}$/d" debian/patches/series
     fi
     rm -rf "debian/patches/$local_subdir"
+
+    # Enable the packaging's own compat patches for this image's rustc.
+    _enable_rust_compat_patches
 
     # Apply en-US.pak + ccache rules-tail (idempotent).
     _apply_rules_tail
@@ -668,7 +748,7 @@ _cmd_ninja() {
     set -e
     [ -n "$trip_pid" ] && kill "$trip_pid" 2>/dev/null || true
     kill "$tail_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
+    _reap "$trip_pid" "$tail_pid"
     trap - EXIT INT TERM
 
     _step "ccache stats (post-ninja)"
@@ -682,6 +762,39 @@ _cmd_ninja() {
         cp out/Release/chrome "$OUT_DIR/chromium"
         _log "Copied chromium binary to $OUT_DIR/chromium ($(stat -c %s "$OUT_DIR/chromium") bytes)"
     fi
+
+    # debian/rules' override_dh_auto_build-arch renames the GN outputs before
+    # dh_install picks them up:
+    #     cp out/Release/chrome         out/Release/chromium
+    #     cp out/Release/content_shell  out/Release/chromium-shell
+    #     cp out/Release/headless_shell out/Release/chromium-headless-shell
+    # `debs` runs dpkg-buildpackage with -nc, which SKIPS the build target
+    # entirely -- so those copies never happen on an incremental run and the
+    # .deb silently ships whatever stale out/Release/chromium was left behind
+    # by the last full build. That shipped a binary with no HEVC advertising
+    # once already (2026-09-05); verify with:
+    #     readelf -n out/Release/chromium | grep "Build ID"
+    # Mirror the renames here so ninja -> debs always packages this build.
+    _rename_for_packaging
+}
+
+# Mirror debian/rules' override_dh_auto_build-arch output renames.
+_build_id() {
+    [ -f "$1" ] || return 0
+    readelf -n "$1" 2>/dev/null | awk '/Build ID/ { print $NF }'
+}
+
+_rename_for_packaging() {
+    local pair src dst
+    for pair in "chrome:chromium" "content_shell:chromium-shell" \
+                "headless_shell:chromium-headless-shell"; do
+        src="out/Release/${pair%%:*}"
+        dst="out/Release/${pair##*:}"
+        if [ -f "$src" ] && ! cmp -s "$src" "$dst"; then
+            cp "$src" "$dst"
+            _log "packaging rename: $src -> $dst"
+        fi
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -721,6 +834,9 @@ _cmd_debs() {
     : > "$build_log"
     : > "$trip_log"
     if [ "$NO_CCACHE" != "1" ]; then ccache --zero-stats >/dev/null; fi
+
+    # -nc skips debian/rules build, so the packaging renames never run.
+    _rename_for_packaging
 
     _step "STAGE 4: dpkg-buildpackage (long; hours)"
     _log "Using $JOBS parallel jobs."
@@ -765,7 +881,7 @@ _cmd_debs() {
     set -e
     [ -n "$trip_pid" ] && kill "$trip_pid" 2>/dev/null || true
     kill "$tail_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
+    _reap "$trip_pid" "$tail_pid"
 
     _step "ccache stats (post-build)"
     ccache -s --verbose 2>/dev/null | head -30 || ccache -s
@@ -802,6 +918,34 @@ _cmd_debs() {
         _die "chromium-l10n still contains usr/lib/chromium/locales/en-US.pak (en-US.pak fix did not take effect)"
     fi
     _log "  ok: chromium-l10n does NOT contain en-US.pak (collision fixed)"
+
+    _step "STAGE 7: verify the .deb ships THIS build"
+    # dpkg-buildpackage runs with -nc, so debian/rules' output renames can be
+    # skipped and dh_install can package a stale out/Release/chromium left by an
+    # earlier build. That silently shipped a binary with no HEVC advertising
+    # once (2026-09-05), and it is invisible until the .deb is on a Pi. Compare
+    # build IDs so it fails here instead.
+    local chromium_deb="$OUT_DIR/chromium_${CHROMIUM_VERSION_FULL}_arm64.deb"
+    if [ ! -f "$chromium_deb" ]; then
+        chromium_deb=$(ls -t "$OUT_DIR"/chromium_*_arm64.deb 2>/dev/null | head -1 || true)
+    fi
+    [ -n "$chromium_deb" ] && [ -f "$chromium_deb" ] || _die "chromium .deb missing"
+    local built_id packaged_id tmpd
+    built_id=$(_build_id "$src/out/Release/chrome")
+    tmpd=$(mktemp -d)
+    dpkg-deb --fsys-tarfile "$chromium_deb" \
+        | tar -xO ./usr/lib/chromium/chromium > "$tmpd/chromium" 2>/dev/null || true
+    packaged_id=$(_build_id "$tmpd/chromium")
+    rm -rf "$tmpd"
+    _log "  built    out/Release/chrome: ${built_id:-<none>}"
+    _log "  packaged $(basename "$chromium_deb"): ${packaged_id:-<none>}"
+    [ -n "$built_id" ]    || _die "no build ID in $src/out/Release/chrome"
+    [ -n "$packaged_id" ] || _die "no build ID in the packaged chromium binary"
+    if [ "$built_id" != "$packaged_id" ]; then
+        _die "the .deb does NOT contain this build (stale out/Release/chromium). \
+Re-run after 'cli.sh ninja', which mirrors the packaging renames."
+    fi
+    _log "  ok: packaged binary is this build"
 
     # Run cleanup explicitly while locals (build_pid/tail_pid/trip_pid) are
     # still in scope. _debs_cleanup untraps EXIT/INT/TERM internally so the

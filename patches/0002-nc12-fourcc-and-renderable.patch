@@ -1,0 +1,119 @@
+Description: Add NC12 (Pi 5 column-tiled NV12) fourcc and make it renderable
+ Pi 5 rpi-hevc-dec exposes V4L2_PIX_FMT_NV12_COL128 (fourcc 'N','C','1','2')
+ on its CAPTURE MPLANE queue. Three separate changes are needed before
+ chromium will hardware-decode 8-bit HEVC on a Pi 5, and all three are
+ required together -- any one alone still ends in "Failed to pick an output
+ format":
+ .
+ 1. media/gpu/chromeos/fourcc.{cc,h}: teach Fourcc about NC12, so
+    V4L2VideoDecoder::SetupOutputFormat() stops rejecting every enumerated
+    CAPTURE format from /dev/video19.
+ 2. media/gpu/chromeos/video_decoder_pipeline.cc: add NC12 to
+    DefaultPreferredRenderableFourccs(), so PickDecoderOutputFormat()
+    accepts the candidate.
+ 3. media/mojo/services/gpu_mojo_media_client_linux.cc: add NC12 to
+    GetPreferredRenderableFourccs(). On Linux the production
+    VideoDecoderPipeline::Create() call site builds its own fourcc list and
+    never consults DefaultPreferredRenderableFourccs(), so step 2 alone does
+    not reach the path we actually hit.
+ .
+ This mirrors how 0009-add-nc30-fourcc-10bit does the equivalent 10-bit work
+ in a single patch. Folded from the original 0002-add-nc12-fourcc,
+ 0004-nc12-renderable and 0007-nc12-in-mojo-client-renderable, which were
+ three separate patches only because they were discovered one at a time.
+Author: Agora <build@agora>
+Forwarded: not-needed
+
+--- a/media/gpu/chromeos/fourcc.cc
++++ b/media/gpu/chromeos/fourcc.cc
+@@ -35,6 +35,7 @@ std::optional<Fourcc> Fourcc::FromUint32(uint32_t fourcc) {
+     case P010:
+     case MT2T:
+     case BGR4:
++    case NC12:
+     case AR24:
+     case Q08C:
+     case Q10C:
+@@ -192,6 +193,13 @@ VideoPixelFormat Fourcc::ToVideoPixelFormat() const {
+       return PIXEL_FORMAT_P010LE;
+     case BGR4:
+       return PIXEL_FORMAT_XRGB;
++    case NC12:
++      // EXPERIMENTAL: BCM2712 column-tiled NV12 from rpi-hevc-dec
++      // (V4L2_PIX_FMT_NV12_COL128). Reported here as plain NV12 so the
++      // media layer's bit-depth / stride math accepts it. Underlying
++      // memory layout is column-tiled and will need GPU-side SAND128
++      // modifier handling to actually render correctly.
++      return PIXEL_FORMAT_NV12;
+     case AR24:
+       return PIXEL_FORMAT_ARGB;
+     // V4L2_PIX_FMT_QC08C is a proprietary Qualcomm compressed format that can
+@@ -296,6 +304,7 @@ std::optional<Fourcc> Fourcc::ToSinglePlanar() const {
+     case MM21:
+     case MT2T:
+     case BGR4:
++    case NC12:
+     case AR24:
+       return Fourcc(value_);
+     case YM12:
+@@ -332,6 +341,7 @@ bool Fourcc::IsMultiPlanar() const {
+     case P010:
+     case MT2T:
+     case BGR4:
++    case NC12:
+     case AR24:
+     case Q08C:
+     case Q10C:
+--- a/media/gpu/chromeos/fourcc.h
++++ b/media/gpu/chromeos/fourcc.h
+@@ -103,6 +103,15 @@ class MEDIA_GPU_EXPORT Fourcc {
+     // Single plane 8-bit little-endian XRGB (bytes in reverse B-G-R-X order).
+     BGR4 = ComposeFourcc('B', 'G', 'R', '4'),
+ 
++    // EXPERIMENTAL — Pi 5 BCM2712 column-tiled NV12
++    // (V4L2_PIX_FMT_NV12_COL128). Two-plane 8-bit YUV 4:2:0 in 128-byte
++    // wide column tiles. Produced by /dev/video19 (rpi-hevc-dec). Mapped
++    // to PIXEL_FORMAT_NV12 at the media layer to pass format selection;
++    // this is a probing alias — the underlying buffer is NOT linear NV12
++    // and full zero-copy rendering also requires DRM modifier
++    // DRM_FORMAT_MOD_BROADCOM_SAND128 on the importing GPU side.
++    NC12 = ComposeFourcc('N', 'C', '1', '2'),
++
+     // V4L2 proprietary format.
+     // https://linuxtv.org/downloads/v4l-dvb-apis-new/userspace-api/v4l/pixfmt-reserved.html
+     // Opaque format that can only be scanned out as an overlay or composited by
+
+--- a/media/gpu/chromeos/video_decoder_pipeline.cc
++++ b/media/gpu/chromeos/video_decoder_pipeline.cc
+@@ -344,6 +344,12 @@ std::vector<Fourcc> VideoDecoderPipeline::DefaultPreferredRenderableFourccs() {
+   // Preferred output formats in order of preference.
+   // TODO(mcasas): query the platform for its preferred formats and modifiers.
+   return {
++#if BUILDFLAG(USE_V4L2_CODEC_RPI)
++      // EXPERIMENTAL: Pi 5 BCM2712 column-tiled NV12 from rpi-hevc-dec.
++      // Listed first so it wins over plain NV12 when both are exposed.
++      // See media/gpu/chromeos/fourcc.h NC12 comment for layout caveats.
++      Fourcc(Fourcc::NC12),
++#endif
+       Fourcc(Fourcc::NV12),
+       Fourcc(Fourcc::P010),
+       // Only used for Hana (MT8173). Remove when that device reaches EOL
+
+--- a/media/mojo/services/gpu_mojo_media_client_linux.cc
++++ b/media/mojo/services/gpu_mojo_media_client_linux.cc
+@@ -49,6 +49,15 @@ std::vector<Fourcc> GetPreferredRenderableFourccs(
+     const gpu::GpuPreferences& gpu_preferences,
+     const gpu::GpuFeatureInfo& gpu_feature_info) {
+   std::vector<Fourcc> renderable_fourccs;
++#if BUILDFLAG(USE_V4L2_CODEC_RPI)
++  // EXPERIMENTAL: Pi 5 BCM2712 column-tiled NV12 (NC12) from rpi-hevc-dec
++  // /dev/video19. Inserted first so PickRenderableFourcc()/
++  // PickDecoderOutputFormat() prefer it over the trailing AR24/BGR4
++  // 1-copy/conversion paths. Without this, V4L2VideoDecoder fails with
++  // "Failed to pick an output format" because its only candidate (NC12)
++  // is not in renderable_fourccs_. See patches/0008-pickfmt-diag.patch.
++  renderable_fourccs.emplace_back(Fourcc::NC12);
++#endif
+ #if BUILDFLAG(ENABLE_VULKAN)
+   // Support for zero-copy NV12/P010 textures preferentially.
+   if (gpu_preferences.gr_context_type == gpu::GrContextType::kVulkan) {
