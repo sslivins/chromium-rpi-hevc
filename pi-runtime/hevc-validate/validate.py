@@ -45,6 +45,11 @@ CLIPS = [
     ("8bit", "hevc_8bit.mp4", "bt709"),
     ("10bit", "hevc_10bit.mp4", "bt709"),
     ("hdr", "hevc_hdr.mp4", "hdr"),
+    # Weighted prediction (issue #14). The 8-bit clip is the control: patch
+    # 0008's hardcoded offset half-range is correct at 8 bits, so a failure
+    # confined to wp10 isolates the bug to the bit-depth-dependent derivation.
+    ("wp8", "hevc_wp_8bit.mp4", "wp"),
+    ("wp10", "hevc_wp_10bit.mp4", "wp"),
 ]
 
 CHROMIUM = "/usr/lib/chromium/chromium"

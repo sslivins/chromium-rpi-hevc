@@ -55,6 +55,10 @@ EXPECTED_PATCHES = [
 SAND_PERIOD_SRC = 128
 SAND_REF_WIDTH = 1920
 
+# Weighted-prediction pattern geometry, matching make_wp_pattern.py.
+WP_REF_W = 240 / 1920
+WP_REF_H = 135 / 1080
+
 
 def load(path: str) -> np.ndarray:
     with Image.open(path) as im:
@@ -251,9 +255,117 @@ def check_chroma_banding(shots: list[np.ndarray], reg) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# weighted prediction (issue #14)
+#
+# The wp clip is a full-frame cross-fade with one small static mid-grey patch
+# in the top-left corner. Because pred_weight_table weights are per-slice and
+# apply to every inter prediction in that slice, the static patch is weighted
+# too -- but its correct output is known a priori and never changes. That
+# makes it an absolute detector: no cross-run frame alignment is needed, and
+# any chroma cast or drift on it is decoder error rather than content.
+#
+# A wrong WpOffsetHalfRangeC shifts the reconstructed chroma of weighted
+# blocks, so the neutral patch acquires a colour cast.
+
+
+def wp_regions(shape: tuple[int, int]) -> dict[str, tuple[int, int, int, int]]:
+    h, w = shape
+    rh = int(round(h * WP_REF_H))
+    rw = int(round(w * WP_REF_W))
+    # Inset the reference patch to stay clear of the edge, where chroma
+    # subsampling and the fading surround bleed in.
+    iy, ix = int(rh * 0.2), int(rw * 0.2)
+    return {
+        "ref": (iy, ix, rh - iy, rw - ix),
+        # Sample the fading field well away from the reference patch.
+        "field": (int(h * 0.55), int(w * 0.55), int(h * 0.95), int(w * 0.95)),
+    }
+
+
+def check_ref_neutral(shots: list[np.ndarray], reg) -> dict:
+    """The grey reference patch must stay chroma-neutral through the fade."""
+    per_shot = []
+    worst = 0.0
+    for s in shots:
+        patch = crop(s, reg["ref"])
+        u, v = chroma(patch)
+        mu, mv = float(u.mean()), float(v.mean())
+        worst = max(worst, abs(mu), abs(mv))
+        per_shot.append({"u": round(mu, 2), "v": round(mv, 2)})
+    ok = worst <= 8.0
+    return {
+        "pass": bool(ok),
+        "chroma_per_capture": per_shot,
+        "worst_abs_chroma": round(worst, 2),
+        "thresholds": {"worst_abs_chroma_max": 8.0},
+    }
+
+
+def check_ref_stable(shots: list[np.ndarray], reg) -> dict:
+    """Static content must not drift while the surrounding frame fades."""
+    if len(shots) < 2:
+        return {"pass": True, "reason": "single capture"}
+    us, vs, ys = [], [], []
+    for s in shots:
+        patch = crop(s, reg["ref"])
+        u, v = chroma(patch)
+        us.append(float(u.mean()))
+        vs.append(float(v.mean()))
+        ys.append(float(luma(patch).mean()))
+    spread = {
+        "luma": round(max(ys) - min(ys), 2),
+        "u": round(max(us) - min(us), 2),
+        "v": round(max(vs) - min(vs), 2),
+    }
+    ok = spread["luma"] <= 10.0 and spread["u"] <= 6.0 and spread["v"] <= 6.0
+    return {
+        "pass": bool(ok),
+        "peak_to_peak": spread,
+        "thresholds": {"luma_max": 10.0, "u_max": 6.0, "v_max": 6.0},
+    }
+
+
+def check_fade_motion(shots: list[np.ndarray], reg) -> dict:
+    """The field must actually be fading, or no weighting is being exercised."""
+    if len(shots) < 2:
+        return {"pass": False, "reason": "need >= 2 captures"}
+    fields = [crop(s, reg["field"]) for s in shots]
+    diffs = [
+        float(np.abs(fields[i + 1] - fields[i]).mean())
+        for i in range(len(fields) - 1)
+    ]
+    ok = max(diffs) > 1.0
+    return {
+        "pass": bool(ok),
+        "mean_abs_diff": [round(d, 3) for d in diffs],
+        "thresholds": {"max_mean_abs_diff_min": 1.0},
+    }
+
+
+def analyse_wp(shots: list[np.ndarray]) -> dict:
+    reg = wp_regions(shots[0].shape[:2])
+    return {
+        "ref_neutral": check_ref_neutral(shots, reg),
+        "ref_stable": check_ref_stable(shots, reg),
+        "fade_motion": check_fade_motion(shots, reg),
+    }
+
+
+def analyse_pattern(shots: list[np.ndarray], profile: str) -> dict:
+    reg = regions(shots[0].shape[:2])
+    return {
+        "not_black": check_not_black(shots, reg),
+        "motion": check_motion(shots, reg),
+        "static_stable": check_static_stable(shots, reg),
+        "colour": check_colour(shots, reg, profile),
+        "chroma_banding": check_chroma_banding(shots, reg),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--profile", choices=["bt709", "hdr"], default="bt709")
+    ap.add_argument("--profile", choices=["bt709", "hdr", "wp"], default="bt709")
     ap.add_argument("--label", default="")
     ap.add_argument("shots", nargs="+")
     args = ap.parse_args()
@@ -263,14 +375,11 @@ def main() -> int:
         print(json.dumps({"pass": False, "error": "captures differ in size"}))
         return 2
 
-    reg = regions(shots[0].shape[:2])
-    checks = {
-        "not_black": check_not_black(shots, reg),
-        "motion": check_motion(shots, reg),
-        "static_stable": check_static_stable(shots, reg),
-        "colour": check_colour(shots, reg, args.profile),
-        "chroma_banding": check_chroma_banding(shots, reg),
-    }
+    checks = (
+        analyse_wp(shots)
+        if args.profile == "wp"
+        else analyse_pattern(shots, args.profile)
+    )
     report = {
         "label": args.label,
         "profile": args.profile,
