@@ -62,6 +62,34 @@ say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 fail() { printf '\033[31mFAIL\033[0m %s\n' "$*"; }
 ok()   { printf '\033[32mok\033[0m   %s\n' "$*"; }
 
+# The signage stack must come back up no matter how we exit.
+#
+# Both diag_codecs.py and validate.py stop agora-player/agora-watchdog to take
+# the display. validate.py restores whatever *it* stopped -- but stage 3 runs
+# first, so by stage 4 the services are already down, validate.py records an
+# empty stopped-list, and nothing restarts them. That silently left the Pi
+# with a dead display after a run. Own the restore here instead, where it
+# covers every stage and every exit path including Ctrl-C.
+AGORA_SERVICES="agora-watchdog agora-player"
+WAS_ACTIVE=""
+for svc in $AGORA_SERVICES; do
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+    WAS_ACTIVE="$WAS_ACTIVE $svc"
+  fi
+done
+
+restore_agora() {
+  local rc=$?
+  for svc in $WAS_ACTIVE; do
+    if ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+      echo "restoring $svc"
+      systemctl start "$svc" || fail "could not restart $svc"
+    fi
+  done
+  return $rc
+}
+trap restore_agora EXIT INT TERM
+
 # ---------------------------------------------------------------- 0. deps
 say "stage 0: dependencies"
 need_pkgs=()
@@ -91,8 +119,13 @@ fi
 
 if [ -n "$DEB_DIR" ]; then
   say "stage 1: installing debs from $DEB_DIR"
-  # shellcheck disable=SC2086
-  if ! dpkg -i "$DEB_DIR"/*.deb; then
+  shopt -s nullglob
+  debs=("$DEB_DIR"/*.deb)
+  shopt -u nullglob
+  if [ "${#debs[@]}" -eq 0 ]; then
+    fail "no .deb files in $DEB_DIR"; exit 2
+  fi
+  if ! dpkg -i "${debs[@]}"; then
     echo "resolving dependencies"
     DEBIAN_FRONTEND=noninteractive apt-get -f install -y || { fail "dpkg install failed"; exit 2; }
   fi
