@@ -13,9 +13,12 @@ Spec ref: H.265 7.4.7.3 (weighted prediction parameters).
 - delta_luma_weight_lX, luma_offset_lX, delta_chroma_weight_lX: forwarded
   byte-for-byte (signed 8-bit per UAPI).
 - chroma_offset_lX: V4L2 wants the *derived* value (ChromaOffsetLX),
-  not the raw delta. Computed per spec eq. (7-56) assuming 8-bit chroma
-  (BitDepthC=8 -> WpOffsetHalfRangeC=128). 10-bit support will need
-  bit_depth_chroma_minus8 plumbed through; the test stream is 8-bit.
+  not the raw delta, expressed in 8-bit units. The V4L2 field is __s8 and
+  rpivid writes it to an 8-bit register (chroma_offset_l0[idx] & 0xff), so
+  WpOffsetHalfRangeC stays 128 at every bit depth: it is an ABI scale, not
+  the spec's 1 << (BitDepthC - 1). Deriving with 512 for Main10 would be 4x
+  too large and would not survive the __s8 cast. Verified against 10-bit
+  weighted content -- see docs/weighted-prediction.md.
 
 Always populated regardless of slice_type / weighted_pred_flag: when the
 bitstream omits the pred_weight_table syntax, the parser leaves the
@@ -47,9 +50,9 @@ benign for the kernel.
 +        static_cast<__s8>(pwt.delta_chroma_log2_weight_denom);
 +
 +    const int chroma_log2 = std::max(pwt.chroma_log2_weight_denom, 0);
-+    // 8-bit chroma assumption (BitDepthC=8). Plumb bit_depth_chroma_minus8
-+    // through when we add 10-bit support.
-+    constexpr int kWpOffsetHalfRangeC = 128;  // 1 << (BitDepthC - 1)
++    // V4L2 carries chroma_offset_lX as __s8 and rpivid writes it to an 8-bit
++    // register, so the offset is normalised to 8-bit units at every BitDepthC.
++    constexpr int kWpOffsetHalfRangeC = 128;  // 8-bit units, NOT 1<<(BitDepthC-1)
 +    constexpr int kV4L2HevcMaxRefs = 16;      // V4L2_HEVC_DPB_ENTRIES_NUM_MAX
 +    const int n = std::min<int>(kMaxRefIdxActive, kV4L2HevcMaxRefs);
 +

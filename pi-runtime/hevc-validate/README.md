@@ -19,9 +19,44 @@ is doing.
 | `static_stable` | The static band does *not* change between captures. Catches tearing/garbage/flicker. |
 | `colour` | Eight solid patches land on their expected colours. |
 | `chroma_banding` | No ~128 px periodic chroma structure. This is the SAND128 regression signature — see `docs/chroma-bug.md`. |
+| `ref_neutral` | The static grey patch in the weighted-prediction clips stays chroma-neutral. Catches a wrong chroma weighted-prediction offset — see `docs/weighted-prediction.md`. |
+| `ref_stable` | That same static patch does not drift while the rest of the frame fades. |
+| `fade_motion` | The weighted-prediction clip is actually fading, so weighting is genuinely being exercised. |
 
-Three clips are exercised: 8-bit Main, 10-bit Main10, and 10-bit HDR10
-(BT.2020 / PQ).
+Five clips are exercised: 8-bit Main, 10-bit Main10, 10-bit HDR10
+(BT.2020 / PQ), and an 8-bit/10-bit pair carrying weighted prediction.
+
+The weighted-prediction pair is a matched control: the chroma offset scale is
+correct at 8 bits by construction, so `wp8` passing while `wp10` fails means
+the fault is specific to the bit-depth handling rather than to weighted
+prediction in general.
+
+## Validating a whole release in one command
+
+```bash
+sudo ./run-validation.sh --tag v0.4.0   # download, verify sha256, install, test
+sudo ./run-validation.sh                # just test what is already installed
+```
+
+This is the entry point to use when a new build appears. It installs any
+missing harness dependencies, fetches and **sha256-verifies** the release's
+runtime debs against the digests published in the release notes, generates
+any missing clips, then runs the codec probe and the full playback gate and
+prints a verdict:
+
+```
+PASS  8bit    baseline 8-bit HEVC hardware decode
+PASS  10bit   Main10 hardware decode (P030 path)
+PASS  hdr     HDR10 metadata and colour handling
+PASS  wp8     weighted prediction, 8-bit control
+PASS  wp10    weighted prediction, 10-bit (issue #14 chroma offset)
+
+OVERALL: GOOD
+```
+
+Exit status is the verdict: `0` good, `1` broken, `2` could not test. The
+distinction matters — a missing dependency or a failed download is not
+evidence that the build is bad.
 
 ## Design notes
 
@@ -40,8 +75,12 @@ sudo apt-get install -y grim python3-numpy python3-pil ffmpeg
 mkdir -p ~/hevc-test
 # copy this directory to the Pi, then:
 bash make_clips.sh ~/hevc-test      # ~1 min, encodes the three clips
+bash make_wp_clips.sh ~/hevc-test   # ~1 min, the weighted-prediction pair
 cp test_page.html ~/hevc-test/
 ```
+
+`run-validation.sh` does all of the above for you; this manual sequence is
+only needed if you want to drive `validate.py` directly.
 
 ## Running
 
