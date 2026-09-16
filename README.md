@@ -1,140 +1,91 @@
-# Chromium 147 with HEVC HW decode for Raspberry Pi 5
+# Chromium with HEVC hardware decoding for Raspberry Pi 5
 
-Patches the upstream Raspberry Pi `chromium 1:147.0.7727.116-1~deb13u1+rpt1`
-package to enable hardware-accelerated HEVC decode (8-bit and 10-bit /
-Main 10) via the Pi 5's stateless V4L2 decoder (`rpi-hevc-dec` on
-`/dev/video19`).
+Patches the upstream Raspberry Pi Chromium package to enable
+hardware-accelerated H.265 / HEVC decoding on Raspberry Pi 5 and CM5.
+Supports 8-bit Main and 10-bit Main 10 through the Pi's stateless V4L2
+decoder, with a Wayland/Mesa rendering path.
 
-## Status (v0.2.6)
+See the [latest release](https://github.com/sslivins/chromium-rpi-hevc/releases/latest)
+for the current Chromium version, packages, tested configurations, and known
+issues. Version-specific changes belong in the
+[release notes](https://github.com/sslivins/chromium-rpi-hevc/releases).
 
-- ✅ 8-bit Main HEVC at 1080p — including weighted prediction (fades / dissolves)
-- ✅ 10-bit Main 10 HEVC at 1080p — NC30 / P030 zero-copy import via Mesa v3d
-- ✅ NC12 (8-bit) and NC30 (10-bit) frames imported into Wayland with
-  `BROADCOM_SAND128` dmabuf modifier; rendered by `cage` / `sway`
-- ✅ HDR10 static metadata (mastering display + content light level)
-  forwarded through the V4L2 H.265 plumbing
-- ✅ 4K HEVC: chromium probes the driver's real max via `VIDIOC_TRY_FMT`
-  when `VIDIOC_ENUM_FRAMESIZES` is unimplemented, lifting the legacy
-  1920x1088 default cap (rpi-hevc-dec advertises 4096x4096)
+## Requirements
 
-## Install (prebuilt debs)
+- Raspberry Pi 5 or CM5 with an `arm64` OS compatible with the release packages.
+- A kernel with the `rpi-hevc-dec` driver and access to the video/render devices.
+- Mesa v3d with Broadcom SAND128 buffer support and a Wayland compositor.
 
-Each tagged release on this repo ships full `arm64` debs.
+## Install
+
+Download the runtime `.deb` packages from the latest release, or use the
+[GitHub CLI](https://cli.github.com/) on the Pi:
 
 ```bash
-gh release download v0.2.3 --repo sslivins/chromium-rpi-hevc -p '*.deb' -D /tmp/chromium-debs
-sudo apt install /tmp/chromium-debs/chromium*.deb
+deb_dir="$(mktemp -d)"
+gh release download --repo sslivins/chromium-rpi-hevc \
+  -p 'chromium_*.deb' -p 'chromium-common_*.deb' \
+  -p 'chromium-sandbox_*.deb' -p 'chromium-l10n_*.deb' \
+  -D "$deb_dir" &&
+sudo apt install "$deb_dir"/*.deb
 ```
 
-`*-dbgsym_*.deb` packages are optional debug symbols (useful for `gdb`,
-not required for normal use).
+Omitting the release tag downloads the latest release. Use packages from the
+same release and check its OS requirements and published checksums before
+installing. Debug-symbol, driver, and shell packages are not needed for normal
+browser use.
 
-## Patches
+## Usage and compatibility
 
-14 quilt-clean patches in `patches/`, applied automatically by the
-build scripts via `debian/patches/local-hevc/`.
+Run Chromium as a normal, non-root user with sandboxing enabled. Some
+[test launchers](pi-runtime/) use `--no-sandbox` for root-run diagnostics;
+that is a runtime flag, not a property of the build, and should not be copied
+into an everyday browsing setup.
 
-| #    | Purpose |
-| ---- | --- |
-| 0001 | `v4l2_utils.cc`: probe `/dev/video19`, map NC12 to `BROADCOM_SAND128`, derive correct stride/chroma offset for SAND128-tiled NC12 |
-| 0002 | Register `NC12` fourcc with chromium's format tables |
-| 0003 | Re-allocate OUTPUT buffers when kernel rejects `S_FMT` with `EBUSY` (stateless decoders) |
-| 0004 | Add `NC12` to the default preferred renderable fourcc list |
-| 0005 | Submit `V4L2_CID_STATELESS_HEVC_SLICE_PARAMS` per slice with correct `bit_size` |
-| 0006 | Weaken over-strict `gbm_wrapper.cc` gate so `gbm_bo_import()` accepts `BROADCOM_SAND128` |
-| 0007 | Add `NC12` to `GetPreferredRenderableFourccs` in the Linux mojo media client |
-| 0008 | Populate full `v4l2_hevc_pred_weight_table` (fixes weighted-prediction corruption on fades) |
-| 0009 | Add `NC30` (10-bit) fourcc throughout chromium media stack |
-| 0010 | NC30 stride derivation in V4L2 stateless decoder |
-| 0011 | GBM `P030` import path for Mesa v3d driver |
-| 0012 | EGL `P030` binding for compositor-side rendering |
-| 0013 | Forward HDR10 static metadata (mastering display + content light level) through the V4L2 H.265 plumbing |
-| 0014 | Probe driver max via `VIDIOC_TRY_FMT` when `VIDIOC_ENUM_FRAMESIZES` is unimplemented (lifts the 1920x1088 cap so 4K HEVC works on rpi-hevc-dec) |
-
-The upstream Raspberry Pi chromium package already carries ~100
-patches — see [`docs/upstream-applied-patches.txt`](docs/upstream-applied-patches.txt)
-for the full list applied **before** any patch in this repo.
+Hardware codec support does not guarantee that a streaming service will select
+HEVC. Websites can apply their own platform and codec restrictions. HDR output
+also depends on the display and graphics stack, not just decoder support.
 
 ## Build
 
-Source is pinned: `cli.sh fetch` downloads the three Debian source files
-from this repo's `upstream-source-147.0.7727.116` GitHub Release and
-SHA256-verifies them. See
-[`docs/upstream-source-pinning.md`](docs/upstream-source-pinning.md)
-for details and the bump procedure.
+Use an `arm64` Linux build host with Docker, substantial RAM, and ample disk
+space. Building Chromium is resource-intensive.
 
-Build runs inside the `chromium-rpi-build` Docker image. Need an arm64
-host with 32+ GB RAM and ~80 GB free disk. First build takes 6–10
-hours; subsequent iterations via `fast` (skips `dpkg-buildpackage`,
-runs `ninja` directly) are minutes thanks to ccache.
+From the repository root:
 
 ```bash
 docker build -t chromium-rpi-build build/
 
-ROOT=$HOME/chromium-rpi-hevc-build
-mkdir -p $ROOT/work $ROOT/out
+ROOT="$HOME/chromium-rpi-hevc-build"
+mkdir -p "$ROOT/work" "$ROOT/out"
 
-# Default CMD is `full`: fetch + patch + dpkg-buildpackage.
 docker run --rm \
   -v "$ROOT/work:/build" \
   -v "$PWD/patches:/patches:ro" \
   -v "$ROOT/out:/out" \
-  chromium-rpi-build
+  chromium-rpi-build full
 ```
 
-Output `.deb`s land in `$ROOT/out/`. The image's ENTRYPOINT is
-`/usr/local/bin/chromium-rpi-hevc` (a single uber-script with
-subcommands); pass any subcommand as the docker arg:
+Packages are written to `$ROOT/out/`; retain the mounted directories for
+incremental builds and compiler caching. The build downloads pinned upstream
+source, verifies its SHA256 checksums, and applies the local patches.
+The pin is maintained in [`build/cli.sh`](build/cli.sh); see
+[upstream source pinning](docs/upstream-source-pinning.md) for the update process.
 
-| Command | What it does |
-| --- | --- |
-| `full`      | fetch + patch + dpkg-buildpackage (full deb build, default) |
-| `fast`      | patch + configure + ninja (fast iteration, no .deb) |
-| `fetch`     | download + verify + extract pinned source only |
-| `patch`     | apply local HEVC patches + en-US.pak fix |
-| `doctor`    | preflight checks; nonzero exit if container is unhealthy |
-| `status`    | print source tree state, stamps, ccache config |
-| `shell`     | drop into a bash shell inside the container |
-| `clean`     | remove source tree + outputs (NOT ccache) |
-
-Useful global flags (must precede the subcommand): `--jobs N`,
-`--no-ccache`, `-v` (shell trace).
+For available build commands and options:
 
 ```bash
-# fast iteration loop after editing a patch:
-docker run --rm -v "$ROOT/work:/build" -v "$PWD/patches:/patches:ro" \
-  -v "$ROOT/out:/out" chromium-rpi-build fast
+docker run --rm chromium-rpi-build help
 ```
 
-Legacy `build/build.sh` and `build/build-fast.sh` are kept as one-line
-exec wrappers for backward compatibility; they will be removed in a
-follow-up cleanup PR.
+## Diagnostics and development
 
-## Pi prerequisites
+- [HEVC validation harness](pi-runtime/hevc-validate/README.md): on-device codec,
+  hardware-decoder, and rendered-output checks. These tests take over the display.
+- [Local patches](patches/): the current patch set and descriptions of each change.
+- [Technical notes](docs/): decoder/rendering investigations and release procedures.
 
-- Raspberry Pi 5 / CM5, Raspberry Pi OS or Debian Trixie (`arm64`)
-- Kernel with `rpi-hevc-dec` (`/dev/video19` present, owned by `video` group)
-- Mesa v3d driver with `DRM_FORMAT_MOD_BROADCOM_SAND128` modifier support
-- A Wayland compositor for native gbm dmabuf import (`sway` / `cage`)
-
-`pi-runtime/` contains a sample `cage` / `sway` launch wrapper used in
-testing — adapt to your setup as needed.
-
-## Known limitations
-
-- HDR is forwarded as static HDR10 metadata; on an SDR display (no
-  KMS `HDR_OUTPUT_METADATA`) Skia tone-maps PQ -> SDR automatically
-- Validated at 1080p (Main / Main 10) and 4K (Main). Other tiles and
-  WPP configurations have not been exercised
-- Plymouth can hold `/dev/dri/card1` past boot, blocking the
-  compositor on next reboot. Workaround: `sudo plymouth quit; sudo pkill -9 plymouthd`
-  (Pi-OS issue, not chromium)
-
-## Repo layout
-
-```
-build/        Dockerfile + cli.sh (uber CLI) + legacy wrapper scripts
-patches/      quilt-clean HEVC patches
-pi-runtime/   sample compositor + launch scripts for the Pi
-docs/         pinning procedure, upstream patch list, diagnostic notes
-```
+When reporting a problem, include the installed Chromium/package version,
+Pi model, OS, kernel/Mesa versions, launch flags, and reproduction steps.
+For playback issues, include the decoder reported by `chrome://media-internals/`
+or `chrome://webrtc-internals/`, as appropriate.
