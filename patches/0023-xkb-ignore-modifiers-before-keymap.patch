@@ -1,0 +1,89 @@
+Avoid a null XKB state dereference when a Wayland seat sends modifiers
+before providing a usable keymap.
+
+Observed on Pi5 with Chromium 152 and Sway: the browser process crashed
+in xkb_state_update_mask() when its window acquired keyboard focus.
+Keeping a virtual keyboard connected masked the problem.
+
+Ignore untranslated modifiers with a warning until a keymap exists.
+Do not invent a keyboard layout or disable the browser sandbox.
+Cover missing/invalid keymaps and modifier processing after a late keymap.
+
+--- a/ui/events/ozone/layout/xkb/xkb_keyboard_layout_engine.cc
++++ b/ui/events/ozone/layout/xkb/xkb_keyboard_layout_engine.cc
+@@ -967,6 +967,12 @@
+                                              uint32_t locked,
+                                              uint32_t group) {
+   auto* state = xkb_state_.get();
++  // A Wayland seat may send modifiers before a usable keymap.
++  if (!state) {
++    LOG(WARNING) << "Ignoring modifiers without an XKB keymap";
++    return EF_NONE;
++  }
++
+   xkb_state_update_mask(state, depressed, latched, locked, 0, 0, group);
+   auto component = static_cast<xkb_state_component>(XKB_STATE_MODS_DEPRESSED |
+                                                     XKB_STATE_MODS_LATCHED |
+--- a/ui/events/ozone/layout/xkb/xkb_keyboard_layout_engine_unittest.cc
++++ b/ui/events/ozone/layout/xkb/xkb_keyboard_layout_engine_unittest.cc
+@@ -168,6 +168,60 @@
+   std::unique_ptr<VkTestXkbKeyboardLayoutEngine> layout_engine_;
+ };
+ 
++TEST_F(XkbLayoutEngineVkTest, UpdateModifiersBeforeKeymap) {
++  EXPECT_EQ(EF_NONE, layout_engine_->UpdateModifiers(0, 0, 0, 0));
++  EXPECT_EQ(EF_NONE, layout_engine_->UpdateModifiers(1, 2, 4, 1));
++}
++
++TEST_F(XkbLayoutEngineVkTest, UpdateModifiersAfterInvalidKeymap) {
++  constexpr char kInvalidKeymap[] = "not an XKB keymap";
++  ASSERT_FALSE(layout_engine_->SetCurrentLayoutFromBuffer(
++      kInvalidKeymap, sizeof(kInvalidKeymap) - 1));
++  EXPECT_EQ(EF_NONE, layout_engine_->UpdateModifiers(1, 2, 4, 1));
++}
++
++TEST_F(XkbLayoutEngineVkTest, UpdateModifiersAfterLateKeymap) {
++  EXPECT_EQ(EF_NONE, layout_engine_->UpdateModifiers(1, 2, 4, 1));
++
++  std::unique_ptr<xkb_context, ui::XkbContextDeleter> context(
++      xkb_context_new(XKB_CONTEXT_NO_FLAGS));
++  ASSERT_TRUE(context);
++  xkb_rule_names names = {
++      .rules = nullptr,
++      .model = "pc101",
++      .layout = "us",
++      .variant = "",
++      .options = "",
++  };
++  std::unique_ptr<xkb_keymap, ui::XkbKeymapDeleter> keymap(
++      xkb_keymap_new_from_names(context.get(), &names,
++                               XKB_KEYMAP_COMPILE_NO_FLAGS));
++  ASSERT_TRUE(keymap);
++  std::unique_ptr<char, base::FreeDeleter> layout(
++      xkb_keymap_get_as_string(keymap.get(), XKB_KEYMAP_FORMAT_TEXT_V1));
++  ASSERT_TRUE(layout);
++  ASSERT_TRUE(layout_engine_->SetCurrentLayoutFromBuffer(
++      layout.get(), std::strlen(layout.get())));
++
++  const xkb_mod_index_t shift_index =
++      xkb_keymap_mod_get_index(keymap.get(), XKB_MOD_NAME_SHIFT);
++  ASSERT_LT(shift_index, 32u);
++  const uint32_t shift_mask = uint32_t{1} << shift_index;
++  EXPECT_EQ(EF_SHIFT_DOWN,
++            layout_engine_->UpdateModifiers(shift_mask, 0, 0, 0));
++  EXPECT_EQ(EF_SHIFT_DOWN,
++            layout_engine_->UpdateModifiers(0, shift_mask, 0, 0));
++  EXPECT_EQ(EF_SHIFT_DOWN,
++            layout_engine_->UpdateModifiers(0, 0, shift_mask, 0));
++  EXPECT_EQ(EF_NONE, layout_engine_->UpdateModifiers(0, 0, 0, 0));
++
++  constexpr char kInvalidKeymap[] = "not an XKB keymap";
++  ASSERT_FALSE(layout_engine_->SetCurrentLayoutFromBuffer(
++      kInvalidKeymap, sizeof(kInvalidKeymap) - 1));
++  EXPECT_EQ(EF_SHIFT_DOWN,
++            layout_engine_->UpdateModifiers(shift_mask, 0, 0, 0));
++}
++
+ TEST_F(XkbLayoutEngineVkTest, KeyboardCodeForPrintable) {
+   // This table contains U+2460 CIRCLED DIGIT ONE, U+2461 CIRCLED DIGIT TWO,
+   // and DomCode::NONE where the result should not depend on those values.
