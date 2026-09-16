@@ -3,10 +3,16 @@
 This repo's build is **fully pinned** to a single Chromium upstream
 version: `1:152.0.7977.82-1~deb13u1+rpt2`. This security-update rebase
 retains the complete HEVC patch series and adds a guard against Wayland
-modifiers arriving before a usable XKB keymap. Build and hardware
-validation of this pin are tracked separately from the previously
-validated `v0.4.0` (`152.0.7977.75`) binary release; a source pin alone
-does not establish playback, interactive gameplay, 4K, or HDR support.
+modifiers arriving before a usable XKB keymap.
+
+The `.82` build passed all seven `XkbLayoutEngineVkTest` tests, including
+the three new regressions, and the five 1080p HEVC fixture checks on Pi 5:
+8-bit, 10-bit, HDR-coded, and weighted-prediction 8-bit/10-bit. These hardware
+checks used a separately extracted browser as a normal user with sandboxing
+enabled; every launch exercised the missing-keymap guard. The original
+Agora processes remained running. This does **not** establish interactive
+GeForce NOW gameplay, 4K decoding, or HDR display output. See the binary
+release notes for packaged-artifact verification and release status.
 
 The keyboard fix is deliberately narrower than "no keyboard attached":
 `wl_keyboard.enter` followed by `modifiers` can arrive without an initial
@@ -132,6 +138,29 @@ re-base our patches onto it:
 8. **Tag a new patch release** (e.g. `v0.3.0`).
 
 ## Verifying the pin manually
+
+### Reusing a previous build safely
+
+Keep the old source/output tree intact. Extract the new pin into a separate
+build root, apply the complete patch series there, then copy the old
+`out/Release` and reuse the existing compiler cache and toolchain image.
+Do not run `fetch` against the old build root: source discovery accepts an
+already-extracted tree and is not a version check.
+
+For source timestamp reuse, compare contents rather than dates: restore the
+old mtime only for byte-identical files, and mark changed/new files newer than
+the retained outputs. Upstream archive mtimes can predate the previous build.
+For example, the `.82` network-isolation Mojom input was dated September 2
+while the retained `.75` generated header was dated September 5. Keeping that
+mtime incorrectly reused a header missing `kSharedWorkerSameSiteCookiesNone`.
+Do not fix this by editing generated headers or dropping the compiler cache.
+
+GN can still schedule tens of thousands of actions across a version change;
+report the actual action count and ccache hit rate, not an assumed tiny
+incremental rebuild. Validate the raw binary before running `debs`, and build
+all packaging targets before shipping their outputs.
+
+### Checksums
 
 ```bash
 # Inside the build container after STAGE 1, you should see:
