@@ -1,1 +1,3 @@
 *.patch text eol=lf
+build/cli.sh text eol=lf
+scripts/*.sh text eol=lf
