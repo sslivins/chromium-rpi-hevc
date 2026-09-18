@@ -34,7 +34,8 @@ prediction in general.
 ## Validating a whole release in one command
 
 ```bash
-sudo ./run-validation.sh --tag v0.4.0   # download, verify sha256, install, test
+sudo ./run-validation.sh \
+  --tag chromium-153.0.8010.47-2-rpt1-hevc1
 sudo ./run-validation.sh                # just test what is already installed
 ```
 
@@ -129,4 +130,3 @@ playback   total_video_frames=173  dropped=0  corrupted=0  1920x1080
 `/dev/video19` is the Pi 5 stateless HEVC decoder. If that node is absent
 from `open_v4l2_nodes`, the build is decoding in software no matter how good
 the picture looks.
-

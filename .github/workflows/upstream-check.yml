@@ -93,6 +93,59 @@ jobs:
 
           BEST_TAG_VER="${BEST/~deb13u1/_deb13u1}"
           BEST_URL_VER="${BEST_TAG_VER//+/%2B}"
+          PINNED_TAG_VER="${PINNED/~deb13u1/_deb13u1}"
+          PINNED_TAG="pios/1%${PINNED_TAG_VER}"
+          BEST_TAG="pios/1%${BEST_TAG_VER}"
+
+          # Summarize the RPi-Distro packaging delta rather than dumping a
+          # potentially enormous patch. Same-version rpt bumps are usually
+          # small enough for this to explain exactly why the release exists;
+          # milestone bumps remain bounded to 20 commits and 50 files.
+          encode_ref() {
+            jq -rn --arg value "$1" '$value | @uri'
+          }
+          COMPARE_JSON="$(mktemp)"
+          PINNED_REF="$(encode_ref "${PINNED_TAG}")"
+          BEST_REF="$(encode_ref "${BEST_TAG}")"
+          if gh api \
+              "/repos/RPi-Distro/chromium/compare/${PINNED_REF}...${BEST_REF}" \
+              > "${COMPARE_JSON}"; then
+            COMMITS="$(jq -r '.total_commits' "${COMPARE_JSON}")"
+            FILES="$(jq -r '.files | length' "${COMPARE_JSON}")"
+            ADDITIONS="$(jq -r '[.files[].additions] | add // 0' "${COMPARE_JSON}")"
+            DELETIONS="$(jq -r '[.files[].deletions] | add // 0' "${COMPARE_JSON}")"
+            COMMIT_LIST="$(jq -r '
+              .commits[:20][] |
+              "- `\(.sha[0:7])` \(.commit.message | split("\n")[0])"
+            ' "${COMPARE_JSON}")"
+            FILE_LIST="$(jq -r '
+              .files[:50][] |
+              "- `\(.filename)` — \(.status), +\(.additions)/-\(.deletions)"
+            ' "${COMPARE_JSON}")"
+            DELTA_SUMMARY="$(cat <<EOF
+          ## RPi-Distro packaging delta
+
+          **${COMMITS} commits, ${FILES} files, +${ADDITIONS}/-${DELETIONS} lines**
+
+          ### Commits (first 20)
+
+          ${COMMIT_LIST}
+
+          <details>
+          <summary>Changed packaging files (first 50)</summary>
+
+          ${FILE_LIST}
+
+          </details>
+
+          Compare: https://github.com/RPi-Distro/chromium/compare/${PINNED_REF}...${BEST_REF}
+          EOF
+            )"
+          else
+            DELTA_SUMMARY="Packaging comparison unavailable; inspect the two upstream tags manually."
+          fi
+          rm -f "${COMPARE_JSON}"
+
           BODY="$(cat <<EOF
           @sslivins — a newer chromium release is available from RPi-Distro.
 
@@ -103,11 +156,13 @@ jobs:
 
           Upstream tag: https://github.com/RPi-Distro/chromium/tree/pios/1%25${BEST_URL_VER}
 
+          ${DELTA_SUMMARY}
+
           ## Suggested workflow
-          1. Bump \`CHROMIUM_VERSION_FULL\` and \`CHROMIUM_VERSION_UPSTREAM\` in \`build/cli.sh\`.
-          2. Re-vendor the upstream sources (see \`docs/upstream-source-pinning.md\`) and update the SHA256s.
+          1. Run \`scripts/vendor-upstream-source.sh --publish ${BEST}\`.
+          2. Update the source pins and \`CHROMIUM_BUILD_DEPS_VERSION\`.
           3. Re-apply our patch series; refresh any that fail.
-          4. Build, install on a Pi, verify HEVC playback, cut the next tag.
+          4. Build, install on a Pi, verify HEVC playback, and tag using the documented Chromium-based version.
 
           _This issue was opened automatically by \`.github/workflows/upstream-check.yml\`._
           EOF

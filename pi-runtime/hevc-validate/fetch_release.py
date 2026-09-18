@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Download and verify the runtime debs of a chromium-rpi-hevc release.
 
-    fetch_release.py --tag v0.4.0 --dest /var/tmp/hevc-debs
+    fetch_release.py --tag chromium-153.0.8010.47-2-rpt1-hevc1 \
+        --dest /var/tmp/hevc-debs
 
 Asset names are discovered from the GitHub API rather than reconstructed from
 a version string, because GitHub rewrites '~' to '.' in asset filenames -- so

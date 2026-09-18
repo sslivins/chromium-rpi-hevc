@@ -5,14 +5,15 @@ version: `1:153.0.8010.47-2~deb13u1+rpt1`. This security-update rebase
 retains the complete HEVC patch series and adds a guard against Wayland
 modifiers arriving before a usable XKB keymap.
 
-The `.82` build passed all seven `XkbLayoutEngineVkTest` tests, including
-the three new regressions, and the five 1080p HEVC fixture checks on Pi 5:
+The 153 build passed all seven `XkbLayoutEngineVkTest` tests, including
+the three missing-keymap regressions, and the five 1080p HEVC fixture checks
+on Pi 5:
 8-bit, 10-bit, HDR-coded, and weighted-prediction 8-bit/10-bit. These hardware
-checks used a separately extracted browser as a normal user with sandboxing
-enabled; every launch exercised the missing-keymap guard. The original
-Agora processes remained running. This does **not** establish interactive
-GeForce NOW gameplay, 4K decoding, or HDR display output. See the binary
-release notes for packaged-artifact verification and release status.
+checks ran against the installed Debian packages on Pi100 and verified both
+hardware decoder use and captured pixels. This does **not** establish
+interactive GeForce NOW gameplay, 4K decoding, or HDR display output. See
+the binary release notes for packaged-artifact verification and release
+status.
 
 The keyboard fix is deliberately narrower than "no keyboard attached":
 `wl_keyboard.enter` followed by `modifiers` can arrive without an initial
