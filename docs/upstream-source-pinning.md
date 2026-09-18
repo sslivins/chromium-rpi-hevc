@@ -1,7 +1,7 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:152.0.7977.82-1~deb13u1+rpt2`. This security-update rebase
+version: `1:153.0.8010.47-2~deb13u1+rpt1`. This security-update rebase
 retains the complete HEVC patch series and adds a guard against Wayland
 modifiers arriving before a usable XKB keymap.
 
@@ -32,7 +32,7 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~915 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-152.0.7977.82`, with SHA256 in `build/cli.sh` |
+| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-153.0.8010.47`, with SHA256 in `build/cli.sh` |
 | Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component introduced by the 151.x `.dsc` and still present in 152.x (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
@@ -118,24 +118,23 @@ re-base our patches onto it:
    build if the .deb does not contain the binary just compiled; do not
    bypass it, since that check exists because a stale binary shipped
    once.
-3. **Vendor the new source files.** Download all files listed in the
-   `.dsc`'s `Files:`/`Checksums-Sha256:` blocks (as of 152.x: orig,
-   orig-pre-gen, debian — don't assume it's still exactly three; the
-   set has changed once already) from
-   `archive.raspberrypi.com/debian/pool/main/c/chromium/`, compute
-   SHA256, and verify they match the `.dsc` file's
-   `Checksums-Sha256:` block.
-4. **Cut a new GitHub Release** named
-   `upstream-source-<new-version>` on this repo and upload all
-   vendored files as assets, with the SHA256s in the release notes.
-5. **Update `build/cli.sh`**: bump
+3. **Vendor and publish the new source files.** The helper reads the
+   `.dsc` instead of assuming a fixed component list, downloads every
+   declared source artifact, verifies RPi-Distro's SHA256s, prints the
+   exact `build/cli.sh` constants, and publishes the pinned-source release:
+
+   ```bash
+   GH_TOKEN=... scripts/vendor-upstream-source.sh --publish \
+     153.0.8010.47-2~deb13u1+rpt1
+   ```
+4. **Update `build/cli.sh`**: bump
    `CHROMIUM_VERSION_FULL`, `CHROMIUM_VERSION_UPSTREAM`,
    `UPSTREAM_RELEASE_URL_DEFAULT`, and the SHA256 constants (add/remove
    constants if the `.dsc`'s component list changed).
-6. **Update `build/Dockerfile`** with the current `debian:trixie`
+5. **Update `build/Dockerfile`** with the current `debian:trixie`
    manifest digest if the base image has rolled (often unnecessary).
-7. **Update this document** with the new pinned version.
-8. **Tag a new patch release** (e.g. `v0.3.0`).
+6. **Update this document** with the new pinned version.
+7. **Tag a new patch release** (e.g. `v0.3.0`).
 
 ## Verifying the pin manually
 
@@ -164,10 +163,10 @@ all packaging targets before shipping their outputs.
 
 ```bash
 # Inside the build container after STAGE 1, you should see:
-#   ok: chromium_152.0.7977.82.orig.tar.xz (f5fe953f...)
-#   ok: chromium_152.0.7977.82.orig-pre-gen.tar.xz (bc2ee549...)
-#   ok: chromium_152.0.7977.82-1~deb13u1+rpt2.debian.tar.xz (cd662ae1...)
-#   ok: chromium_152.0.7977.82-1~deb13u1+rpt2.dsc (52b6b00f...)
+#   ok: chromium_153.0.8010.47.orig.tar.xz (d7b52d13...)
+#   ok: chromium_153.0.8010.47.orig-pre-gen.tar.xz (bdfb320a...)
+#   ok: chromium_153.0.8010.47-2~deb13u1+rpt1.debian.tar.xz (16bca097...)
+#   ok: chromium_153.0.8010.47-2~deb13u1+rpt1.dsc (889f8b8c...)
 sha256sum /build/src/chromium_*.{orig.tar.xz,orig-pre-gen.tar.xz,debian.tar.xz,dsc}
 ```
 
