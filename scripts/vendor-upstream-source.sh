@@ -20,6 +20,7 @@ Options:
 Environment:
   POOL_URL                 Override the Raspberry Pi package pool URL.
   VENDOR_DIR               Override the output directory.
+  GITHUB_REPOSITORY        Override the release repository.
   UPSTREAM_RELEASE_TARGET  Git ref used when creating a release (default: main).
 EOF
 }
@@ -49,6 +50,7 @@ pool_url="${POOL_URL:-$POOL_URL_DEFAULT}"
 vendor_dir="${VENDOR_DIR:-vendor/upstream-source-$version_upstream}"
 dsc="chromium_${version_full}.dsc"
 release_tag="upstream-source-$version_upstream"
+github_repository="${GITHUB_REPOSITORY:-sslivins/chromium-rpi-hevc}"
 
 mkdir -p "$vendor_dir"
 cd "$vendor_dir"
@@ -123,8 +125,10 @@ trap 'rm -f "$notes_file"' EXIT
     printf '```\n'
 } >"$notes_file"
 
-if ! gh release view "$release_tag" >/dev/null 2>&1; then
+if ! gh release view "$release_tag" \
+    --repo "$github_repository" >/dev/null 2>&1; then
     gh release create "$release_tag" \
+        --repo "$github_repository" \
         --target "${UPSTREAM_RELEASE_TARGET:-main}" \
         --title "$release_tag" \
         --notes-file "$notes_file"
@@ -134,7 +138,8 @@ assets=("$dsc")
 while read -r _ name; do
     assets+=("$name")
 done <"$checksum_file"
-gh release upload "$release_tag" --clobber "${assets[@]}"
+gh release upload "$release_tag" \
+    --repo "$github_repository" --clobber "${assets[@]}"
 
 printf 'Published %s with %d verified assets.\n' \
     "$release_tag" "${#assets[@]}"
