@@ -32,7 +32,7 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-153.0.8010.47`, with SHA256 in `build/cli.sh` |
+| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-153.0.8010.47-2-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
 | Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component introduced by the 151.x `.dsc` and still present in 152.x (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
@@ -131,8 +131,9 @@ re-base our patches onto it:
    `CHROMIUM_VERSION_FULL`, `CHROMIUM_VERSION_UPSTREAM`,
    `UPSTREAM_RELEASE_URL_DEFAULT`, and the SHA256 constants (add/remove
    constants if the `.dsc`'s component list changed).
-5. **Update `build/Dockerfile`** with the current `debian:trixie`
-   manifest digest if the base image has rolled (often unnecessary).
+5. **Update `CHROMIUM_BUILD_DEPS_VERSION` in `build/Dockerfile`** so
+   Docker refreshes the package's build dependencies. Update the
+   `debian:trixie` manifest digest too if the base image has rolled.
 6. **Update this document** with the new pinned version.
 7. **Tag a new patch release** (e.g. `v0.3.0`).
 

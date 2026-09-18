@@ -67,7 +67,7 @@ readonly STAMP_RULES_TAIL="$SRC_DIR/.local-hevc-rules-tail-applied"
 
 readonly CHROMIUM_VERSION_FULL="153.0.8010.47-2~deb13u1+rpt1"
 readonly CHROMIUM_VERSION_UPSTREAM="153.0.8010.47"
-readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-153.0.8010.47"
+readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-153.0.8010.47-2-deb13u1-rpt1"
 readonly SHA256_ORIG="d7b52d13651391a7951f7f6c51941518152d261bd4e33382960830c59c2332fd"
 readonly SHA256_ORIG_PREGEN="bdfb320af01e4d991880102cf6e8b4f7d001f6c52cb9c7529743268d67b0fb3c"
 readonly SHA256_DEBIAN="16bca0971d34c4b44d9e85d7303d2904c07f2d2f9115fc159fb7b5700b7b5a6c"
@@ -329,10 +329,10 @@ EOF
 _enable_rust_compat_patches() {
     # RPi/Debian ship per-rustc-version compatibility patch sets in
     # debian/patches/rust-<major>.<minor>/ but disable them in the series,
-    # because their builders use rustc-web (>= 1.96 for 152.x) rather than
-    # the distro's stock rustc. rustc-web is not available for trixie/arm64,
-    # so this image builds with Debian trixie's rustc 1.85 and needs the
-    # matching compat set turned back on.
+    # because current builders use rustc-web. This fallback supports an older
+    # cached image or distribution where only stock rustc is available; a
+    # freshly rebuilt image should install the rustc-web version declared by
+    # the current Chromium package.
     #
     # Keying off the *actual* rustc version is self-limiting: if the image
     # ever moves to a newer toolchain there will be no matching directory
@@ -352,9 +352,8 @@ _enable_rust_compat_patches() {
         want_rustset="yes"
     fi
 
-    # Chromium 152 expects the Rust stdlib to ship adler2; rustc 1.85 still
-    # ships adler, so the sysroot copy of libadler2.rlib fails. The packaging
-    # carries its own workaround for this, likewise disabled upstream.
+    # Older stock Rust stdlibs ship adler rather than adler2. The packaging
+    # carries its own workaround for that case, likewise disabled upstream.
     local sysroot
     sysroot=$(rustc --print sysroot 2>/dev/null || echo /usr)
     if ! ls "$sysroot"/lib/rustlib/*/lib/libadler2*.rlib >/dev/null 2>&1 \
