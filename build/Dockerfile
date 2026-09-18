@@ -1,4 +1,4 @@
-# Build env for Raspberry Pi-flavored chromium 151 with custom HEVC patches.
+# Build env for Raspberry Pi-flavored Chromium with custom HEVC patches.
 # Target: arm64 / Debian trixie (matches Pi 5 / CM5 running Debian 13).
 # Host:   any arm64 Linux (Docker Desktop on Windows-on-ARM works natively, no qemu).
 #
@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         sudo less vim file lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
-# 3b. LLVM/Clang 22 toolchain. Chromium 151's debian/control hard-pins
+# 3b. LLVM/Clang 22 toolchain. Chromium's debian/control hard-pins
 #     llvm-22/clang-22/lld-22/clang-format-22/libclang-rt-22-dev, none of
 #     which are in trixie main or the RPi archive yet — only available via
 #     apt.llvm.org's nightly/branch builds. Needed before `build-dep` below
@@ -64,7 +64,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends gnupg && \
     rm -rf /var/lib/apt/lists/* /tmp/llvm.sh
 
 # 4. chromium build-dep. This is enormous (~3GB of -dev headers).
-RUN apt-get update && apt-get build-dep -y chromium \
+# Bump this argument with the source pin so Docker refreshes dependencies
+# instead of silently reusing the previous Chromium release's cached layer.
+ARG CHROMIUM_BUILD_DEPS_VERSION=153.0.8010.47-2~deb13u1+rpt1
+RUN echo "Installing build dependencies for ${CHROMIUM_BUILD_DEPS_VERSION}" \
+    && apt-get update && apt-get build-dep -y chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # 5. Workspace

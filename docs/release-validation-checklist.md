@@ -3,8 +3,8 @@
 Status: **living document.** Update the matrix + baseline results on every
 Chromium version bump.
 Owner: agora / chromium-rpi-hevc
-Last validated build: **151.0.7922.173** on Pi5 (Pi100, `192.168.1.100`),
-2026-08-28.
+Last validated build: **153.0.8010.47-2~deb13u1+rpt1** on Pi5
+(Pi100, `192.168.1.100`), 2026-09-18.
 
 ## Why this exists
 
@@ -64,12 +64,12 @@ playing through the real kiosk player (not headless):
 Run every row on real Pi5 hardware for each new build. "147" column = the
 last known-good baseline for regression comparison.
 
-| # | Content | Codec / profile | Bit depth | Color | Container tag | 147 | 151 |
+| # | Content | Codec / profile | Bit depth | Color | Container tag | 147 | 153 |
 |---|---------|-----------------|-----------|-------|---------------|-----|-----|
-| 1 | HEVC SD  | HEVC Main       | 8-bit  | SDR (bt709)          | hev1 | PASS | **PASS** (needs `0020`) |
+| 1 | HEVC SD  | HEVC Main       | 8-bit  | SDR (bt709)          | hev1 | PASS | **PASS** |
 | 2 | HEVC HD  | HEVC Main       | 8-bit  | SDR                  | hev1/hvc1 | PASS | **PASS** |
-| 3 | HEVC HD  | HEVC **Main10** | 10-bit | SDR (bt709)          | hvc1 | PASS | **PASS** (needs `0021`) |
-| 4 | HEVC HD  | HEVC **Main10** | 10-bit | **HDR10** (bt2020/PQ)| hvc1 | PASS | **PASS** (needs `0021`) |
+| 3 | HEVC HD  | HEVC **Main10** | 10-bit | SDR (bt709)          | hvc1 | PASS | **PASS** |
+| 4 | HEVC HD  | HEVC **Main10** | 10-bit | **HDR10** (bt2020/PQ)| hvc1 | PASS | **PASS** |
 | 5 | HEVC 4K  | HEVC Main / Main10 | 8/10 | SDR + HDR10        | hvc1 | TODO | TODO |
 | 6 | H.264 HD | H.264 High      | 8-bit  | SDR                  | n/a  | PASS | verify |
 | 7 | VP9 / AV1 (if enabled) | — | — | — | — | n/a | verify |

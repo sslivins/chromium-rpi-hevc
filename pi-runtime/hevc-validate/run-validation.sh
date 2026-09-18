@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-command acceptance check for a chromium-rpi-hevc build.
 #
-#   sudo ./run-validation.sh --tag v0.4.0     # fetch, install, validate
+#   sudo ./run-validation.sh --tag chromium-153.0.8010.47-2-rpt1-hevc1
 #   sudo ./run-validation.sh                  # validate what is installed
 #
 # Answers a single question: is this chromium good or broken on this Pi?
