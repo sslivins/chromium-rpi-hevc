@@ -135,7 +135,29 @@ re-base our patches onto it:
    Docker refreshes the package's build dependencies. Update the
    `debian:trixie` manifest digest too if the base image has rolled.
 6. **Update this document** with the new pinned version.
-7. **Tag a new patch release** (e.g. `v0.3.0`).
+7. **Tag the validated build** using the release versioning scheme below.
+
+## Release versioning
+
+Build release tags identify both the exact RPi-Distro base and our local
+patchset revision:
+
+```text
+chromium-<chromium-version>-<debian-revision>-rpt<revision>-hevc<revision>
+```
+
+For example, the first local build based on
+`153.0.8010.47-2~deb13u1+rpt1` is:
+
+```text
+chromium-153.0.8010.47-2-rpt1-hevc1
+```
+
+Increment `hevcN` for a local-only patch or packaging rebuild. Reset it to
+`hevc1` whenever the RPi-Distro base changes, including an `rpt` revision.
+Pinned-source releases use the exact Debian base too, for example
+`upstream-source-153.0.8010.47-2-deb13u1-rpt1`; this prevents a later
+`rpt2` source release from overwriting the `rpt1` artifacts.
 
 ## Verifying the pin manually
 
