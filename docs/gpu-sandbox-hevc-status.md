@@ -57,3 +57,54 @@ adding a `/dev/media*` broker-permission grant to
 `content/common/gpu_pre_sandbox_hook_linux.cc`, following the same pattern as
 the already-vendored `v4l2-sandbox-allow-decoder-devices.patch`. Results and
 any resulting patch will be recorded here.
+
+## Test results (2026-09-20, Pi100, chromium 153.0.8010.47-2)
+
+Ran `hevc-validate/validate.py --drop-flag=--no-sandbox` (the harness runs as
+root, so chromium is launched as root too). Result: **all 5 clips failed
+instantly**, and not for a device-broker permission reason at all:
+
+```
+[ERROR] content/browser/zygote_host/zygote_host_impl_linux.cc:102
+Running as root without --no-sandbox is not supported.
+```
+
+This is a separate, unconditional Chromium restriction (crbug.com/638180):
+the zygote refuses to enable the sandbox when the browser process itself is
+root, regardless of any GPU/device broker permissions. **PR #64's fix never
+gets a chance to matter here** -- we never get past this earlier check.
+
+Root cause: `agora-player.service` has no `User=` directive, so systemd runs
+it (and everything it spawns: sway, chromium) as **root**. That is the actual
+reason `--no-sandbox` is required today in `agora` -- not a missing V4L2
+device-broker permission.
+
+Follow-up probe: launched chromium as the unprivileged `agora` user instead
+(keeping the harness/sway-start as root, for convenience) with `--no-sandbox`
+dropped. `agora` already has the right group memberships (`video`, `render`)
+for `/dev/dri/*`, `/dev/video19`, `/dev/media2`. But sway itself failed to
+start as `agora`:
+
+```
+[wlr] [libseat] Could not open target tty: Permission denied
+[wlr] backend/backend.c: Timeout waiting session to become active
+[wlr] backend/backend.c: Failed to start a DRM session
+```
+
+`seatd` is not installed/active on Pi100, and an SSH-spawned `agora` login
+session has no seat assignment, so wlroots' `libseat` backend can't grant it
+DRM master. Getting a non-root compositor+browser stack working needs either
+`seatd` running (with the process launched from a session seatd will grant a
+seat to) or a properly seat-assigned logind session -- orthogonal
+infrastructure work, unrelated to the Chromium/HEVC patches themselves.
+
+### Conclusion so far
+
+Removing `--no-sandbox` from `agora` is **not just a Chromium/patch
+question** -- it first requires making `agora-player` (and the sway
+compositor it starts) run as a non-root user with real seat/DRM access.
+That's a bigger, orthogonal change to `agora`'s process model (systemd
+`User=`, `seatd`, group/permissions, possibly udev rules), not a
+chromium-rpi-hevc patch. Once that's in place, the already-vendored PR #64
+broker fix may or may not need supplementing for `/dev/media*` access --
+still untested, since we never got that far.
