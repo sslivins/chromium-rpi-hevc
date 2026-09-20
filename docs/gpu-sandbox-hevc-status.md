@@ -98,13 +98,50 @@ DRM master. Getting a non-root compositor+browser stack working needs either
 seat to) or a properly seat-assigned logind session -- orthogonal
 infrastructure work, unrelated to the Chromium/HEVC patches themselves.
 
-### Conclusion so far
+### Conclusion (updated below -- do not stop reading here)
 
 Removing `--no-sandbox` from `agora` is **not just a Chromium/patch
 question** -- it first requires making `agora-player` (and the sway
 compositor it starts) run as a non-root user with real seat/DRM access.
 That's a bigger, orthogonal change to `agora`'s process model (systemd
 `User=`, `seatd`, group/permissions, possibly udev rules), not a
-chromium-rpi-hevc patch. Once that's in place, the already-vendored PR #64
-broker fix may or may not need supplementing for `/dev/media*` access --
-still untested, since we never got that far.
+chromium-rpi-hevc patch.
+
+## Follow-up test: non-root + seatd (2026-09-20, same session)
+
+Installed `seatd` (`apt-get install seatd`; not present/active by default on
+this Pi100 image) and started it, then re-ran sway + chromium as the
+unprivileged `agora` user, **independent of `agora-player`** (harness/services
+stopped, sway+chromium launched by hand via `runuser -u agora`), with
+`--no-sandbox` dropped entirely:
+
+- sway started fine as `agora` this time -- `seatd`'s socket
+  (`/run/seatd.sock`, group `video`, which `agora` is already a member of)
+  gave it the DRM/seat access it couldn't get before.
+- chromium launched **with the sandbox enabled**, no `--no-sandbox` flag at
+  all.
+- The GPU process had **both `/dev/video19` and `/dev/media0` open** as file
+  descriptors -- no `Permission denied` anywhere in the log.
+- Verified live HEVC decode traffic in the log (`HEVC_DBG_SPS`/`_PPS`/slice
+  parsing) and successful `AGORA_PERPLANE_IMPORT` GBM/EGL plane imports --
+  i.e. actual hardware-decoded frames were being produced and imported for
+  display, fully sandboxed.
+
+**Conclusion: the already-vendored PR #64 broker fix is sufficient.** It
+covers (or at least doesn't block) `/dev/media*` access in practice, not just
+`/dev/video*` -- the theoretical gap this doc originally worried about did not
+materialize. **No new chromium-rpi-hevc patch is needed.**
+
+The only real blocker to dropping `--no-sandbox` in `agora` is that
+`agora-player.service` runs as root. To ship this in production, `agora`
+needs (as a separate, orthogonal change, out of scope for this repo):
+
+1. `seatd` installed and enabled by default on the Pi OS image.
+2. `agora-player.service` given a `User=`/`Group=` (a dedicated `agora`
+   system user, or similar), with membership in `video`/`render` (and
+   `input` if it needs raw input devices).
+3. Re-validation that everything the player currently does as root (D-Bus,
+   systemctl calls, file paths under `/opt/agora`, `/data`, etc.) still works
+   unprivileged, or is delegated appropriately (polkit rules, sudoers, etc.).
+
+That work belongs in the `agora` repo, not here.
