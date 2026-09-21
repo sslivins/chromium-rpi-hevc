@@ -66,7 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gnupg && \
 # 4. chromium build-dep. This is enormous (~3GB of -dev headers).
 # Bump this argument with the source pin so Docker refreshes dependencies
 # instead of silently reusing the previous Chromium release's cached layer.
-ARG CHROMIUM_BUILD_DEPS_VERSION=153.0.8010.47-2~deb13u1+rpt1
+ARG CHROMIUM_BUILD_DEPS_VERSION=153.0.8010.52-1~deb13u1+rpt1
 RUN echo "Installing build dependencies for ${CHROMIUM_BUILD_DEPS_VERSION}" \
     && apt-get update && apt-get build-dep -y chromium \
     && rm -rf /var/lib/apt/lists/*
