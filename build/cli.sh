@@ -79,7 +79,8 @@ readonly SHA256_DSC="dd7253c454ce426cfd44e67a9e13c7be0bd17be8fb1a3c28776a7ab3d10
 # grep for them to detect whether the rules-tail has been applied.
 readonly MARKER_EN_US='# chromium-rpi-hevc: drop duplicate en-US.pak from chromium-l10n staging'
 readonly MARKER_CCACHE='# chromium-rpi-hevc: enable ccache as cc_wrapper (Tier 1)'
-readonly MARKER_CONFIGURE_TARGET='# chromium-rpi-hevc: split-out configure target so cli.sh fast can work cold (#29)'
+readonly MARKER_CONFIGURE_TARGET_PREFIX='# chromium-rpi-hevc: split-out configure target'
+readonly MARKER_CONFIGURE_TARGET="$MARKER_CONFIGURE_TARGET_PREFIX so cli.sh fast can work cold (#29, v2: upstream gn recipe)"
 
 # ---------------------------------------------------------------------------
 # Globals (set by main argv parsing; not user env vars)
@@ -315,16 +316,29 @@ EOF
     # invoking the full build-arch pipeline (issue #29). The target is named
     # cli-* (not override_dh_*) so dpkg-buildpackage / dh do NOT call it; only
     # explicit `make -f debian/rules cli-chromium-rpi-hevc-configure` does.
+    #
+    # The gn command and prerequisites are copied from upstream's own
+    # override_dh_auto_build-arch rather than hardcoded: 153 used a system
+    # `gn`, while 154 bootstraps ./out/Release/gn via an out/Release/gn
+    # target, and a hardcoded `gn` failed with "gn: not found".
     if grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules; then
         :
     else
-        # Use unquoted heredoc so $MARKER_CONFIGURE_TARGET expands; escape
-        # $(defines)/$(threads) so they remain literal make variable refs.
-        # The recipe line MUST start with a real TAB (make requires it).
+        # Drop a configure block written by an older cli.sh (marker + 2 lines).
+        awk -v p="$MARKER_CONFIGURE_TARGET_PREFIX" \
+            'skip > 0 { skip--; next } index($0, p) == 1 { skip = 2; next } { print }' \
+            debian/rules > debian/rules.tmp && mv debian/rules.tmp debian/rules
+        chmod +x debian/rules
+        local prereqs gen_line
+        prereqs=$(sed -n 's/^override_dh_auto_build-arch:[[:space:]]*//p' debian/rules | head -1)
+        gen_line=$(awk '/^override_dh_auto_build-arch:/ { f = 1; next }
+                        f && !/^\t/ { exit }
+                        f && / gen out\/Release / { print; exit }' debian/rules)
+        [ -n "$gen_line" ] || _die "no 'gn gen out/Release' line in upstream override_dh_auto_build-arch; update _apply_rules_tail"
         printf '\n%s\n' "$MARKER_CONFIGURE_TARGET" >> debian/rules
-        printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure\n' >> debian/rules
-        printf '\tgn gen out/Release --args="$(defines)" --threads="$(threads)"\n' >> debian/rules
-        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules"
+        printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure %s\n' "$prereqs" >> debian/rules
+        printf '%s\n' "$gen_line" >> debian/rules
+        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules (prereqs: ${prereqs:-none}; recipe:${gen_line})"
     fi
 }
 
