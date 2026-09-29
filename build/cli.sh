@@ -24,6 +24,8 @@
 #
 #   full       fetch + patch + debs (matches old build.sh).
 #   fast       patch + configure + ninja (matches old build-fast.sh).
+#   smoke-tarball  Pack out/Release into /out/chromium-<ver>-smoketest.tar.gz
+#              for a raw-binary smoke test on the Pi (checks v8 snapshots etc).
 #   doctor     Preflight checks; exits nonzero if container is unhealthy.
 #   status     Print current state of source tree, stamps, ccache.
 #   logs       List recent cli.sh log files (in /out/.cli-logs/).
@@ -1083,6 +1085,66 @@ _cmd_clean() {
 _cmd_shell() { _setup_env; _setup_ccache; exec /bin/bash; }
 
 # ---------------------------------------------------------------------------
+# smoke-tarball — pack out/Release into a self-contained tarball that runs
+# straight from an unpacked directory on the Pi (raw-binary smoke test before
+# packaging). Required files are checked explicitly: the 153.0.8010.52 smoke
+# test lost a round trip because the v8 snapshots were missing ("Error loading
+# V8 startup snapshot file" + GPU process crash).
+# ---------------------------------------------------------------------------
+_cmd_smoke_tarball() {
+    local src; src=$(_require_src_tree)
+    local rel="$src/out/Release"
+    local name="chromium-${CHROMIUM_VERSION_UPSTREAM}-smoketest"
+    local tarball="$OUT_DIR/$name.tar.gz"
+    local required=(chrome chrome_crashpad_handler icudtl.dat
+        v8_context_snapshot.bin snapshot_blob.bin resources.pak
+        chrome_100_percent.pak locales/en-US.pak libEGL.so libGLESv2.so)
+    local f missing=0
+    for f in "${required[@]}"; do
+        [ -e "$rel/$f" ] || { _log "  MISSING: out/Release/$f"; missing=1; }
+    done
+    [ "$missing" -eq 0 ] || _die "out/Release is incomplete; run 'fast' first"
+
+    local files=()
+    cd "$rel"
+    for f in chrome chrome_crashpad_handler chrome-wrapper icudtl.dat \
+             v8_context_snapshot.bin snapshot_blob.bin *.pak locales \
+             libEGL.so libGLESv2.so libvk*.so vk_swiftshader_icd.json; do
+        [ -e "$f" ] && files+=("$f")
+    done
+    _log "packing ${#files[@]} entries from $rel"
+    tar -czf "$tarball.tmp" --transform "s,^,$name/," "${files[@]}"
+    mv -f "$tarball.tmp" "$tarball"
+    _log "build id: $(_build_id chrome)"
+    ls -lh "$tarball"
+    _log "on the Pi: tar -xzf $(basename "$tarball") && sudo python3 validate.py --chromium \$PWD/$name/chrome ..."
+}
+
+# ---------------------------------------------------------------------------
+# Tree lock — only one mutating cli.sh may touch a source tree at a time.
+# Two `debs` containers launched 12s apart on the same tree (2026-09-21) raced:
+# ninja deletes each .rsp file after its command succeeds, so the other
+# ninja's rustc_wrapper.py hit "FileNotFoundError: ...lib.rsp". They also both
+# truncated and tailed the shared /out/build.log. The lock lives in the
+# bind-mounted /build/src, so it is shared across containers.
+# ---------------------------------------------------------------------------
+_acquire_tree_lock() {
+    case "$1" in
+        fetch|patch|configure|ninja|debs|full|fast|clean|smoke-tarball) ;;
+        *) return 0 ;;
+    esac
+    command -v flock >/dev/null 2>&1 || { _log "WARN: flock missing; tree lock disabled"; return 0; }
+    mkdir -p "$SRC_DIR"
+    local lock="$SRC_DIR/.cli-rpi-hevc.lock"
+    exec 9>>"$lock"
+    if ! flock -n 9; then
+        _die "another cli.sh is already using $SRC_DIR ($(cat "$lock" 2>/dev/null || echo unknown)); refusing to run '$1' concurrently"
+    fi
+    printf '%s pid=%s container=%s started=%s\n' \
+        "$1" "$$" "$(hostname)" "$(date -u +%FT%TZ)" > "$lock"
+}
+
+# ---------------------------------------------------------------------------
 # Auto-log — every cli.sh invocation tees stdout+stderr to a timestamped file
 # under /out/.cli-logs/<sub>-<UTC>.log. A `latest.log` symlink always points
 # at the most recent run. Skipped for interactive/read-only subcommands.
@@ -1183,6 +1245,7 @@ main() {
     [ -n "$sub" ] || { _cmd_help; exit 1; }
 
     _setup_autolog "$sub"
+    _acquire_tree_lock "$sub"
 
     case "$sub" in
         fetch)     _cmd_fetch "$@" ;;
@@ -1192,6 +1255,7 @@ main() {
         debs)      _cmd_debs "$@" ;;
         full)      _cmd_full "$@" ;;
         fast)      _cmd_fast "$@" ;;
+        smoke-tarball) _cmd_smoke_tarball "$@" ;;
         doctor)    _cmd_doctor "$@" ;;
         status)    _cmd_status "$@" ;;
         logs)      _cmd_logs "$@" ;;

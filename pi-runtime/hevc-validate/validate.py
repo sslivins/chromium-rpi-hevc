@@ -477,6 +477,7 @@ def preflight(clip_dir: Path) -> list[str]:
 
 
 def main() -> int:
+    global CHROMIUM
     ap = argparse.ArgumentParser()
     ap.add_argument("--clip-dir", default=str(Path.home() / "hevc-test"))
     ap.add_argument("--workdir", default="/tmp/hevc-validate")
@@ -485,6 +486,10 @@ def main() -> int:
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--only", default="", help="comma-separated labels to run")
     ap.add_argument("--keep-agora-down", action="store_true")
+    ap.add_argument(
+        "--chromium", default=CHROMIUM,
+        help="chromium binary to test (e.g. an unpacked raw build for smoke testing)",
+    )
     ap.add_argument(
         "--start", type=float, default=None,
         help="seek to this offset (seconds) and replay from there",
@@ -507,6 +512,8 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    CHROMIUM = str(Path(args.chromium).resolve())
+
     if os.geteuid() != 0:
         log("must run as root (needs systemctl, DRM master, /proc fd inspection)")
         return 2
@@ -528,6 +535,7 @@ def main() -> int:
     chromium_version = run(["dpkg-query", "-W", "-f=${Version}", "chromium"]).stdout.strip()
     report = {
         "chromium_version": chromium_version,
+        "chromium_binary": CHROMIUM,
         "kernel": run(["uname", "-r"]).stdout.strip(),
         "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "results": [],
