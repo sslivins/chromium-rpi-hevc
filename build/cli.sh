@@ -1258,8 +1258,8 @@ main() {
 
     [ -n "$sub" ] || { _cmd_help; exit 1; }
 
-    _setup_autolog "$sub"
     _acquire_tree_lock "$sub"
+    _setup_autolog "$sub"
 
     case "$sub" in
         fetch)     _cmd_fetch "$@" ;;
