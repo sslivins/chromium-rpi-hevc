@@ -24,6 +24,8 @@
 #
 #   full       fetch + patch + debs (matches old build.sh).
 #   fast       patch + configure + ninja (matches old build-fast.sh).
+#   smoke-tarball  Pack out/Release into /out/chromium-<ver>-smoketest.tar.gz
+#              for a raw-binary smoke test on the Pi (checks v8 snapshots etc).
 #   doctor     Preflight checks; exits nonzero if container is unhealthy.
 #   status     Print current state of source tree, stamps, ccache.
 #   logs       List recent cli.sh log files (in /out/.cli-logs/).
@@ -65,19 +67,20 @@ readonly PATCHES_DIR=/patches
 readonly STAMP_PATCH_FP="$SRC_DIR/.local-hevc-patch-fp"
 readonly STAMP_RULES_TAIL="$SRC_DIR/.local-hevc-rules-tail-applied"
 
-readonly CHROMIUM_VERSION_FULL="153.0.8010.52-1~deb13u1+rpt1"
-readonly CHROMIUM_VERSION_UPSTREAM="153.0.8010.52"
-readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-153.0.8010.52-1-deb13u1-rpt1"
-readonly SHA256_ORIG="949683889f9a6c91f9240e089e527c39627bfc2265c3986a4cc9b910e53f4da1"
-readonly SHA256_ORIG_PREGEN="1ad6693cb92e1b02d2c11f620f307adcdf5fd7fa6863463f813954e5394bc21b"
-readonly SHA256_DEBIAN="f547fef3af6f21aa311bd0a861f1b44a950232c14b7e3bd4ae762265b1356b43"
-readonly SHA256_DSC="86b0017cecc1b40a34eea83a5af6f6cd5f509f55db53913fda7b08bd8d3f420b"
+readonly CHROMIUM_VERSION_FULL="154.0.8037.57-1~deb13u1+rpt1"
+readonly CHROMIUM_VERSION_UPSTREAM="154.0.8037.57"
+readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-154.0.8037.57-1-deb13u1-rpt1"
+readonly SHA256_ORIG="d251fba87c477bc04a08dd0a7426f6373327487d878d13664477c41faed50fee"
+readonly SHA256_ORIG_PREGEN="3f42d7e0516007a88ac97e2e596ffd4f2602f0164a6ff0571a0dfafe1881d454"
+readonly SHA256_DEBIAN="4c5eaa0af1e775b32df1562a8f7f34b95d259646c589b816b99207780d087594"
+readonly SHA256_DSC="dd7253c454ce426cfd44e67a9e13c7be0bd17be8fb1a3c28776a7ab3d1028c69"
 
 # These are deliberately marker text; we both append them to debian/rules and
 # grep for them to detect whether the rules-tail has been applied.
 readonly MARKER_EN_US='# chromium-rpi-hevc: drop duplicate en-US.pak from chromium-l10n staging'
 readonly MARKER_CCACHE='# chromium-rpi-hevc: enable ccache as cc_wrapper (Tier 1)'
-readonly MARKER_CONFIGURE_TARGET='# chromium-rpi-hevc: split-out configure target so cli.sh fast can work cold (#29)'
+readonly MARKER_CONFIGURE_TARGET_PREFIX='# chromium-rpi-hevc: split-out configure target'
+readonly MARKER_CONFIGURE_TARGET="$MARKER_CONFIGURE_TARGET_PREFIX so cli.sh fast can work cold (#29, v2: upstream gn recipe)"
 
 # ---------------------------------------------------------------------------
 # Globals (set by main argv parsing; not user env vars)
@@ -313,16 +316,29 @@ EOF
     # invoking the full build-arch pipeline (issue #29). The target is named
     # cli-* (not override_dh_*) so dpkg-buildpackage / dh do NOT call it; only
     # explicit `make -f debian/rules cli-chromium-rpi-hevc-configure` does.
+    #
+    # The gn command and prerequisites are copied from upstream's own
+    # override_dh_auto_build-arch rather than hardcoded: 153 used a system
+    # `gn`, while 154 bootstraps ./out/Release/gn via an out/Release/gn
+    # target, and a hardcoded `gn` failed with "gn: not found".
     if grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules; then
         :
     else
-        # Use unquoted heredoc so $MARKER_CONFIGURE_TARGET expands; escape
-        # $(defines)/$(threads) so they remain literal make variable refs.
-        # The recipe line MUST start with a real TAB (make requires it).
+        # Drop a configure block written by an older cli.sh (marker + 2 lines).
+        awk -v p="$MARKER_CONFIGURE_TARGET_PREFIX" \
+            'skip > 0 { skip--; next } index($0, p) == 1 { skip = 2; next } { print }' \
+            debian/rules > debian/rules.tmp && mv debian/rules.tmp debian/rules
+        chmod +x debian/rules
+        local prereqs gen_line
+        prereqs=$(sed -n 's/^override_dh_auto_build-arch:[[:space:]]*//p' debian/rules | head -1)
+        gen_line=$(awk '/^override_dh_auto_build-arch:/ { f = 1; next }
+                        f && !/^\t/ { exit }
+                        f && / gen out\/Release / { print; exit }' debian/rules)
+        [ -n "$gen_line" ] || _die "no 'gn gen out/Release' line in upstream override_dh_auto_build-arch; update _apply_rules_tail"
         printf '\n%s\n' "$MARKER_CONFIGURE_TARGET" >> debian/rules
-        printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure\n' >> debian/rules
-        printf '\tgn gen out/Release --args="$(defines)" --threads="$(threads)"\n' >> debian/rules
-        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules"
+        printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure %s\n' "$prereqs" >> debian/rules
+        printf '%s\n' "$gen_line" >> debian/rules
+        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules (prereqs: ${prereqs:-none}; recipe:${gen_line})"
     fi
 }
 
@@ -1083,6 +1099,66 @@ _cmd_clean() {
 _cmd_shell() { _setup_env; _setup_ccache; exec /bin/bash; }
 
 # ---------------------------------------------------------------------------
+# smoke-tarball — pack out/Release into a self-contained tarball that runs
+# straight from an unpacked directory on the Pi (raw-binary smoke test before
+# packaging). Required files are checked explicitly: the 153.0.8010.52 smoke
+# test lost a round trip because the v8 snapshots were missing ("Error loading
+# V8 startup snapshot file" + GPU process crash).
+# ---------------------------------------------------------------------------
+_cmd_smoke_tarball() {
+    local src; src=$(_require_src_tree)
+    local rel="$src/out/Release"
+    local name="chromium-${CHROMIUM_VERSION_UPSTREAM}-smoketest"
+    local tarball="$OUT_DIR/$name.tar.gz"
+    local required=(chrome chrome_crashpad_handler icudtl.dat
+        v8_context_snapshot.bin snapshot_blob.bin resources.pak
+        chrome_100_percent.pak locales/en-US.pak libEGL.so libGLESv2.so)
+    local f missing=0
+    for f in "${required[@]}"; do
+        [ -e "$rel/$f" ] || { _log "  MISSING: out/Release/$f"; missing=1; }
+    done
+    [ "$missing" -eq 0 ] || _die "out/Release is incomplete; run 'fast' first"
+
+    local files=()
+    cd "$rel"
+    for f in chrome chrome_crashpad_handler chrome-wrapper icudtl.dat \
+             v8_context_snapshot.bin snapshot_blob.bin *.pak locales \
+             libEGL.so libGLESv2.so libvk*.so vk_swiftshader_icd.json; do
+        [ -e "$f" ] && files+=("$f")
+    done
+    _log "packing ${#files[@]} entries from $rel"
+    tar -czf "$tarball.tmp" --transform "s,^,$name/," "${files[@]}"
+    mv -f "$tarball.tmp" "$tarball"
+    _log "build id: $(_build_id chrome)"
+    ls -lh "$tarball"
+    _log "on the Pi: tar -xzf $(basename "$tarball") && sudo python3 validate.py --chromium \$PWD/$name/chrome ..."
+}
+
+# ---------------------------------------------------------------------------
+# Tree lock — only one mutating cli.sh may touch a source tree at a time.
+# Two `debs` containers launched 12s apart on the same tree (2026-09-21) raced:
+# ninja deletes each .rsp file after its command succeeds, so the other
+# ninja's rustc_wrapper.py hit "FileNotFoundError: ...lib.rsp". They also both
+# truncated and tailed the shared /out/build.log. The lock lives in the
+# bind-mounted /build/src, so it is shared across containers.
+# ---------------------------------------------------------------------------
+_acquire_tree_lock() {
+    case "$1" in
+        fetch|patch|configure|ninja|debs|full|fast|clean|smoke-tarball) ;;
+        *) return 0 ;;
+    esac
+    command -v flock >/dev/null 2>&1 || { _log "WARN: flock missing; tree lock disabled"; return 0; }
+    mkdir -p "$SRC_DIR"
+    local lock="$SRC_DIR/.cli-rpi-hevc.lock"
+    exec 9>>"$lock"
+    if ! flock -n 9; then
+        _die "another cli.sh is already using $SRC_DIR ($(cat "$lock" 2>/dev/null || echo unknown)); refusing to run '$1' concurrently"
+    fi
+    printf '%s pid=%s container=%s started=%s\n' \
+        "$1" "$$" "$(hostname)" "$(date -u +%FT%TZ)" > "$lock"
+}
+
+# ---------------------------------------------------------------------------
 # Auto-log — every cli.sh invocation tees stdout+stderr to a timestamped file
 # under /out/.cli-logs/<sub>-<UTC>.log. A `latest.log` symlink always points
 # at the most recent run. Skipped for interactive/read-only subcommands.
@@ -1182,6 +1258,7 @@ main() {
 
     [ -n "$sub" ] || { _cmd_help; exit 1; }
 
+    _acquire_tree_lock "$sub"
     _setup_autolog "$sub"
 
     case "$sub" in
@@ -1192,6 +1269,7 @@ main() {
         debs)      _cmd_debs "$@" ;;
         full)      _cmd_full "$@" ;;
         fast)      _cmd_fast "$@" ;;
+        smoke-tarball) _cmd_smoke_tarball "$@" ;;
         doctor)    _cmd_doctor "$@" ;;
         status)    _cmd_status "$@" ;;
         logs)      _cmd_logs "$@" ;;

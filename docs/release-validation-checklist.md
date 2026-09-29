@@ -3,8 +3,8 @@
 Status: **living document.** Update the matrix + baseline results on every
 Chromium version bump.
 Owner: agora / chromium-rpi-hevc
-Last validated build: **153.0.8010.52-1~deb13u1+rpt1** on Pi5
-(Pi100, `192.168.1.100`), 2026-09-21.
+Last validated build: **154.0.8037.57-1~deb13u1+rpt1** on Pi5
+(Pi100, `192.168.1.100`), 2026-09-29.
 
 ## Why this exists
 
@@ -145,21 +145,28 @@ human eyeball both exist.
 
 ## How to run a build on-device (fast iteration)
 
-1. Build on the ARM VM: `build/cli.sh fast` produces
+1. Build on the ARM VM: `scripts/vm-run.sh <root> fast` produces
    `out/Release/chrome` (unstripped; larger than the packaged binary but
-   runs). See `docs/…` + the `chromium-arm-builder` skill.
-2. Push the raw binary and swap it in (keeps a backup, fully reversible):
+   runs). See `docs/upstream-source-pinning.md` + the `chromium-arm-builder` skill.
+2. **Self-contained smoke test (works across versions, no install):**
+   `scripts/vm-run.sh <root> smoke-tarball` writes
+   `<root>/out/chromium-<ver>-smoketest.tar.gz` after checking that every
+   runtime file is present (the v8 snapshots were once missed, which shows
+   up as `Error loading V8 startup snapshot file` + a GPU process crash).
+   Unpack it on the Pi and run the harness against it:
+   `sudo python3 validate.py --clip-dir ~/hevc-test --chromium <dir>/chrome`.
+3. Or push the raw binary and swap it in (keeps a backup, fully reversible):
    - back up `/usr/lib/chromium/chromium` → `chromium.stock-<ver>`
    - `install -o root -g root -m 0755 <new> /usr/lib/chromium/chromium`
    - a raw-binary swap only works when the **same Chromium version's
      resources** (`.pak`, `icudtl.dat`, `locales`) are already installed;
      for a cross-version test, swap the whole `/usr/lib/chromium` tree
      extracted from the `.deb`s (`dpkg-deb -x`) instead.
-3. Drive playback by writing `/opt/agora/state/desired.json` (stop
+4. Drive playback by writing `/opt/agora/state/desired.json` (stop
    `agora-cms-client` first so it doesn't reconcile it away), then
    `systemctl restart agora-player`. Restore `desired.json` +
    `agora-cms-client` when done.
-4. Regression-compare against 147 by swapping the whole
+5. Regression-compare against 147 by swapping the whole
    `/usr/lib/chromium` tree from the archived 147 `.deb`s in
    `release-v0.2.9/` (binary **and** matching resources must move together).
 
