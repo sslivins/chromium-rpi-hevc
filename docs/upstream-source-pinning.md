@@ -1,16 +1,21 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:153.0.8010.52-1~deb13u1+rpt1`. This is a pure upstream
-security-point-release rebase (from `153.0.8010.47-2~deb13u1+rpt1`) — the
-RPi-Distro `rpi/*` packaging patches are byte-identical between the two
-tags, and all local HEVC patches re-applied with zero fuzz, so no patch
-content changes were needed.
+version: `1:154.0.8037.57-1~deb13u1+rpt1`. This is a major-version rebase
+(from `153.0.8010.52-1~deb13u1+rpt1`). The RPi-Distro `rpi/v4l2-*`
+packaging patches are unchanged between the two tags; the upstream
+changes are toolchain churn (`trixie/gn-*` and `bookworm/*` patches
+commented out, `rust-cbor` dropped, `crubit` moved under `ungoogled/`,
+new `ungoogled/*` and `fixes/tsc-split-comp` patches). All local HEVC
+patches re-applied with zero fuzz. The only build change needed was in
+`build/cli.sh`: 154's `debian/rules` bootstraps `./out/Release/gn` rather
+than using a system `gn`, so our configure target now copies upstream's
+`gn` prerequisites and `gn gen` line instead of hard-coding them.
 
 The five 1080p HEVC fixture checks on Pi 5 (8-bit, 10-bit, HDR-coded, and
 weighted-prediction 8-bit/10-bit) all passed on this build, both as a raw
 `out/Release/chrome` binary and via the installed Debian packages on
-Pi100, with hardware V4L2 decode confirmed (`/dev/media0`, `/dev/video19`
+Pi100, with hardware V4L2 decode confirmed (`/dev/media1`, `/dev/video19`
 held open, no software-fallback log hits). This does **not** establish
 interactive GeForce NOW gameplay, 4K decoding, or HDR display output. See
 the binary release notes for packaged-artifact verification and release
@@ -34,7 +39,7 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-153.0.8010.52-1-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
+| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-154.0.8037.57-1-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
 | Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component introduced by the 151.x `.dsc` and still present in 152.x (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
