@@ -120,24 +120,46 @@ re-base our patches onto it:
    build if the .deb does not contain the binary just compiled; do not
    bypass it, since that check exists because a stale binary shipped
    once.
-3. **Vendor and publish the new source files.** The helper reads the
-   `.dsc` instead of assuming a fixed component list, downloads every
-   declared source artifact, verifies RPi-Distro's SHA256s, prints the
-   exact `build/cli.sh` constants, and publishes the pinned-source release:
+3. **Vendor and publish the new source files, and write the pins.** The
+   helper reads the `.dsc` instead of assuming a fixed component list,
+   downloads every declared source artifact, verifies RPi-Distro's
+   SHA256s, publishes the pinned-source release, and (with
+   `--write-pins`) rewrites the `build/cli.sh` version/URL/SHA256
+   constants and `CHROMIUM_BUILD_DEPS_VERSION` in `build/Dockerfile`.
+   `--publish` checks `gh` auth *before* the ~1 GB download:
 
    ```bash
-   GH_TOKEN=... scripts/vendor-upstream-source.sh --publish \
-     153.0.8010.47-2~deb13u1+rpt1
+   gh auth token | ssh <vm> 'read -r GH_TOKEN; export GH_TOKEN; cd ~/chromium-rpi-hevc &&
+     scripts/vendor-upstream-source.sh --publish --write-pins 154.0.8037.57-1~deb13u1+rpt1'
    ```
-4. **Update `build/cli.sh`**: bump
-   `CHROMIUM_VERSION_FULL`, `CHROMIUM_VERSION_UPSTREAM`,
-   `UPSTREAM_RELEASE_URL_DEFAULT`, and the SHA256 constants (add/remove
-   constants if the `.dsc`'s component list changed).
-5. **Update `CHROMIUM_BUILD_DEPS_VERSION` in `build/Dockerfile`** so
-   Docker refreshes the package's build dependencies. Update the
-   `debian:trixie` manifest digest too if the base image has rolled.
-6. **Update this document** with the new pinned version.
-7. **Tag the validated build** using the release versioning scheme below.
+
+   If the `.dsc`'s component list changes, `_cmd_fetch` and the pin
+   constants need a manual edit (the helper refuses unknown shapes).
+4. **Update the `debian:trixie` manifest digest** in `build/Dockerfile`
+   if the base image has rolled.
+5. **Build on the VM with `scripts/vm-run.sh`** (one fresh root per
+   version, e.g. `~/chromium154-57`):
+
+   ```bash
+   scripts/vm-run.sh ~/chromium154-57 fetch
+   scripts/vm-run.sh ~/chromium154-57 patch            # strict zero-fuzz
+   scripts/vm-run.sh --detach ~/chromium154-57 fast    # ~90 min cold on 64 cores
+   scripts/vm-run.sh ~/chromium154-57 smoke-tarball    # raw-binary test tarball
+   # ...smoke test on the Pi (validate.py --chromium <unpacked>/chrome)...
+   CHROMIUM_DEBS_CONFIRM=1 scripts/vm-run.sh --detach ~/chromium154-57 debs
+   ```
+
+   `vm-run.sh` builds/tags the image by build-deps version, bind-mounts
+   this checkout's `build/cli.sh` (no image rebuild for script changes),
+   and refuses a second container on the same root. `cli.sh` also holds
+   a `flock` on the source tree: two concurrent `debs` runs on one tree
+   (2026-09-21) raced on ninja's `.rsp` files and failed with
+   `FileNotFoundError: ...lib.rsp` in `rustc_wrapper.py`.
+6. **Publish the validated debs** with
+   `scripts/publish-release.sh --notes-file notes.md ~/chromium154-57`
+   (derives the tag, requires a pushed HEAD, appends the sha256 block
+   `fetch_release.py` verifies against; try `--dry-run` first).
+7. **Update this document** with the new pinned version.
 
 ## Release versioning
 

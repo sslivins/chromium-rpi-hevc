@@ -69,7 +69,7 @@ args=(run --rm --label "$label"
     -v "$repo/patches:/patches:ro"
     -v "$repo/build/cli.sh:/usr/local/bin/chromium-rpi-hevc:ro")
 [ -n "${CHROMIUM_DEBS_CONFIRM:-}" ] && args+=(-e "CHROMIUM_DEBS_CONFIRM=$CHROMIUM_DEBS_CONFIRM")
-args+=("$image" "$sub" "$@")
+args+=(--entrypoint /bin/bash "$image" /usr/local/bin/chromium-rpi-hevc "$sub" "$@")
 
 if [ "$detach" -eq 1 ]; then
     log="$root/$sub.log"
