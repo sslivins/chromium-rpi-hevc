@@ -1,0 +1,154 @@
+Description: Prefer rpi-hevc-dec's multi-planar SAND formats (NV12MT_COL128)
+ Raspberry Pi's HEVC decoder (/dev/video19) offers two families of CAPTURE
+ formats on kernels >= 6.18:
+ .
+  - 'Nc12' / 'Nc30' (V4L2_PIX_FMT_NV12MT_COL128 / NV12MT_10_COL128):
+    multi-planar, luma and chroma in separate buffers. Listed first by the
+    driver; this is the upstream format and the one Raspberry Pi's FFmpeg
+    and GStreamer pick by default.
+  - 'NC12' / 'NC30' (legacy single-planar NV12_COL128 / NV12_10_COL128).
+ .
+ The slice bit_size semantics of the multi-planar formats are the same on
+ every kernel, while the legacy formats changed meaning on some kernels
+ (rpt 6.18.29, Ubuntu linux-raspi 7.0), which broke HEVC there (issue #81).
+ Teach chromium about the multi-planar formats and prefer them; patch 0018
+ then picks bit_size from the negotiated format. Kernels without them
+ (rpi 6.12.y) keep using NC12/NC30 unchanged.
+ .
+ Layout: two V4L2 planes -> two dma-bufs, modifier BROADCOM_SAND128. SAND128
+ consumers (Mesa v3d via EGL/GBM, KMS) take the column height in the pitch
+ field, so the plane strides are overridden to height (luma) and height / 2
+ (chroma), matching what Raspberry Pi's FFmpeg exports. The GBM/EGL import
+ patches (0006, 0011, 0015, 0017, 0021) key off the modifier, not the
+ fourcc, so they apply unchanged.
+Forwarded: not-needed
+Author: Steve Slivinski <stesli@github.local>
+Last-Update: 2026-10-10
+--- a/media/gpu/chromeos/fourcc.cc
++++ b/media/gpu/chromeos/fourcc.cc
+@@ -38,6 +38,8 @@ std::optional<Fourcc> Fourcc::FromUint32(uint32_t fourcc) {
+     case BGR4:
+     case NC12:
+     case NC30:
++    case NC12M:
++    case NC30M:
+     case AR24:
+     case Q08C:
+     case Q10C:
+@@ -195,6 +197,7 @@ VideoPixelFormat Fourcc::ToVideoPixelFormat() const {
+       return PIXEL_FORMAT_P010LE;
+     case BGR4:
+       return PIXEL_FORMAT_XRGB;
++    case NC12M:
+     case NC12:
+       // EXPERIMENTAL: BCM2712 column-tiled NV12 from rpi-hevc-dec
+       // (V4L2_PIX_FMT_NV12_COL128). Reported here as plain NV12 so the
+@@ -202,6 +205,7 @@ VideoPixelFormat Fourcc::ToVideoPixelFormat() const {
+       // memory layout is column-tiled and will need GPU-side SAND128
+       // modifier handling to actually render correctly.
+       return PIXEL_FORMAT_NV12;
++    case NC30M:
+     case NC30:
+       // EXPERIMENTAL: BCM2712 column-tiled 10-bit YUV from rpi-hevc-dec
+       // (V4L2_PIX_FMT_NV12_10_COL128). Reported here as P010LE so the
+@@ -319,6 +323,10 @@ std::optional<Fourcc> Fourcc::ToSinglePlanar() const {
+     case NC30:
+     case AR24:
+       return Fourcc(value_);
++    case NC12M:
++      return Fourcc(NC12);
++    case NC30M:
++      return Fourcc(NC30);
+     case YM12:
+       return Fourcc(YU12);
+     case YM21:
+@@ -367,6 +375,8 @@ bool Fourcc::IsMultiPlanar() const {
+     case YM16:
+     case MT21:
+     case MM21:
++    case NC12M:
++    case NC30M:
+       return true;
+   }
+ }
+--- a/media/gpu/chromeos/fourcc.h
++++ b/media/gpu/chromeos/fourcc.h
+@@ -123,6 +123,16 @@ class MEDIA_GPU_EXPORT Fourcc {
+     // side.
+     NC30 = ComposeFourcc('N', 'C', '3', '0'),
+ 
++    // Pi 5 BCM2712 column-tiled NV12, multi-planar variant
++    // (V4L2_PIX_FMT_NV12MT_COL128): same SAND128 layout as NC12 but luma and
++    // chroma live in separate V4L2 planes / dma-bufs, each with its own column
++    // height. This is the upstream format; rpi-hevc-dec offers it first on
++    // kernels >= 6.18 and always uses payload-only slice bit_size with it.
++    NC12M = ComposeFourcc('N', 'c', '1', '2'),
++
++    // 10-bit multi-planar variant (V4L2_PIX_FMT_NV12MT_10_COL128) of NC30.
++    NC30M = ComposeFourcc('N', 'c', '3', '0'),
++
+     // V4L2 proprietary format.
+     // https://linuxtv.org/downloads/v4l-dvb-apis-new/userspace-api/v4l/pixfmt-reserved.html
+     // Opaque format that can only be scanned out as an overlay or composited by
+--- a/media/gpu/chromeos/video_decoder_pipeline.cc
++++ b/media/gpu/chromeos/video_decoder_pipeline.cc
+@@ -374,6 +374,12 @@ std::vector<Fourcc> VideoDecoderPipeline::DefaultPreferredRenderableFourccs() {
+   // TODO(mcasas): query the platform for its preferred formats and modifiers.
+   return {
+ #if BUILDFLAG(USE_V4L2_CODEC_RPI)
++      // PATCH_0024_NV12MT_COL128: prefer the multi-planar SAND formats over
++      // the legacy single-planar NC12/NC30 whenever the driver offers them;
++      // their slice bit_size semantics are stable across kernels (see patch
++      // 0018).
++      Fourcc(Fourcc::NC12M),
++      Fourcc(Fourcc::NC30M),
+       // EXPERIMENTAL: Pi 5 BCM2712 column-tiled NV12 from rpi-hevc-dec.
+       // Listed first so it wins over plain NV12 when both are exposed.
+       // See media/gpu/chromeos/fourcc.h NC12 comment for layout caveats.
+--- a/media/gpu/v4l2/v4l2_utils.cc
++++ b/media/gpu/v4l2/v4l2_utils.cc
+@@ -251,6 +251,9 @@ std::optional<VideoFrameLayout> V4L2FormatToVideoFrameLayout(
+     modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
+   } else if (video_fourcc == Fourcc(Fourcc::NC30)) {
+     modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
++  } else if (video_fourcc == Fourcc(Fourcc::NC12M) ||
++             video_fourcc == Fourcc(Fourcc::NC30M)) {
++    modifiers = DRM_FORMAT_MOD_BROADCOM_SAND128;
+   } else {
+     modifiers = DRM_FORMAT_MOD_LINEAR;
+   }
+@@ -278,6 +281,19 @@ std::optional<VideoFrameLayout> V4L2FormatToVideoFrameLayout(
+     planes.emplace_back(static_cast<int32_t>(plane_format.bytesperline), 0u,
+                         plane_format.sizeimage);
+   }
++#if BUILDFLAG(USE_V4L2_CODEC_RPI)
++  // PATCH_0024_NV12MT_COL128: for the multi-planar SAND128 formats each
++  // V4L2 plane is its own buffer of 128-byte-wide columns. bytesperline is
++  // the (padded) row width, but SAND128 consumers (Mesa v3d, DRM/KMS) take
++  // the column height in the pitch field, as Raspberry Pi's FFmpeg does:
++  // luma columns are |height| lines tall, chroma columns |height| / 2.
++  if ((video_fourcc == Fourcc(Fourcc::NC12M) ||
++       video_fourcc == Fourcc(Fourcc::NC30M)) &&
++      planes.size() == 2u) {
++    UNSAFE_TODO(planes[0]).stride = static_cast<int32_t>(pix_mp.height);
++    UNSAFE_TODO(planes[1]).stride = static_cast<int32_t>(pix_mp.height / 2);
++  }
++#endif
+   // For the case that #color planes > #buffers, it fills stride of color
+   // plane which does not map to buffer.
+   // Right now only some pixel formats are supported: NV12, YUV420, YVU420.
+--- a/media/mojo/services/gpu_mojo_media_client_linux.cc
++++ b/media/mojo/services/gpu_mojo_media_client_linux.cc
+@@ -47,6 +47,12 @@ std::vector<Fourcc> GetPreferredRenderableFourccs(
+     const gpu::GpuFeatureInfo& gpu_feature_info) {
+   std::vector<Fourcc> renderable_fourccs;
+ #if BUILDFLAG(USE_V4L2_CODEC_RPI)
++  // PATCH_0024_NV12MT_COL128: prefer the multi-planar SAND formats
++  // (NV12MT_COL128 / NV12MT_10_COL128) over the legacy single-planar
++  // NC12/NC30 whenever rpi-hevc-dec offers them; their slice bit_size
++  // semantics are stable across kernels (see patch 0018).
++  renderable_fourccs.emplace_back(Fourcc::NC12M);
++  renderable_fourccs.emplace_back(Fourcc::NC30M);
+   // EXPERIMENTAL: Pi 5 BCM2712 column-tiled NV12 (NC12) from rpi-hevc-dec
+   // /dev/video19. Inserted first so PickRenderableFourcc()/
+   // PickDecoderOutputFormat() prefer it over the trailing AR24/BGR4
