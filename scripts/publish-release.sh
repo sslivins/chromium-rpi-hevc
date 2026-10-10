@@ -1,11 +1,13 @@
 #!/bin/bash
 # Publish the validated runtime .debs from a build root as a GitHub release.
 #
-# Usage: scripts/publish-release.sh [--rev N] [--notes-file FILE] [--dry-run] ROOT
+# Usage: scripts/publish-release.sh [--rev N] [--notes-file FILE] [--prerelease] [--dry-run] ROOT
 #
 #   ROOT          Build root used with scripts/vm-run.sh (debs are in ROOT/out).
 #   --rev N       HEVC patchset revision for the tag suffix (default: 1).
 #   --notes-file  Human-written release notes; the sha256 block is appended.
+#   --prerelease  Mark the GitHub release as a pre-release (e.g. a fix for
+#                 reporters to try before it lands on main).
 #   --dry-run     Print the tag, notes and assets without publishing.
 #
 # The tag is chromium-<upstream>-<debian-rev>-rpt<N>-hevc<rev>, e.g.
@@ -19,17 +21,19 @@ set -euo pipefail
 rev=1
 notes_in=""
 dry_run=0
+prerelease=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --rev) rev="$2"; shift 2 ;;
         --notes-file) notes_in="$2"; shift 2 ;;
         --dry-run) dry_run=1; shift ;;
+        --prerelease) prerelease=(--prerelease); shift ;;
         -h|--help) sed -n '2,/^set /p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         -*) echo "unknown option: $1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
-[ "$#" -eq 1 ] || { echo "usage: $0 [--rev N] [--notes-file FILE] [--dry-run] ROOT" >&2; exit 2; }
+[ "$#" -eq 1 ] || { echo "usage: $0 [--rev N] [--notes-file FILE] [--prerelease] [--dry-run] ROOT" >&2; exit 2; }
 out="$(realpath "$1")/out"
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -73,6 +77,7 @@ trap 'rm -f "$notes"' EXIT
 
 echo "tag:    $tag"
 echo "target: $head"
+[ "${#prerelease[@]}" -eq 0 ] || echo "type:   pre-release"
 echo "--- notes ---"; cat "$notes"
 if [ "$dry_run" -eq 1 ]; then
     echo "(dry run; nothing published)"
@@ -80,5 +85,6 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 
 gh release create "$tag" --target "$head" --title "$tag" --notes-file "$notes" \
+    ${prerelease[@]+"${prerelease[@]}"} \
     "${debs[@]/#/$out/}"
 gh release view "$tag" --json assets --jq '.assets[].name'
