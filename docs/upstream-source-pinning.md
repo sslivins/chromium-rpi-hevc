@@ -1,20 +1,23 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:155.0.8059.79-1~deb13u1+rpt1`. This is a major-version rebase
-(from `154.0.8037.57-1~deb13u1+rpt1`, skipping RPi's intermediate
-154.0.8037.92 and 155.0.8059.39 releases). The RPi-Distro `rpi/v4l2-*`
-packaging patches are byte-identical between the two tags; upstream
-changes are packaging churn (`crubit` and `verification-tokens` moved from
-`ungoogled/` to `fixes/`, new `disable/omnibox-ai-mode`, refreshed
-`debianization/pre-gen`, `system/rollup` and `ungoogled/disable-ai`). All
-local HEVC patches, including `0024` (NV12MT_COL128 multi-planar capture
-formats), re-applied with zero fuzz and no build-script changes.
+version: `1:156.0.8078.73-1~deb13u1+rpt1`. This is a major-version rebase
+(from `155.0.8059.79-1~deb13u1+rpt1`, skipping RPi's intermediate
+156.0.8078.47 release). RPi-Distro replaced two of its own patches
+(`rpi/v4l2-stateful-count-instances-once` →
+`rpi/v4l2-stateful-fix-instance-counting`, and
+`rpi/x11-import-bgrx-native-pixmap` →
+`rpi/x11-add-bgrx-native-pixmap-binding`); neither touches files our local
+patches modify, and we use the stateless decoder. Upstream `debian/rules`
+now sets up TypeScript and esbuild from system Node packages; our
+configure target derives that recipe from `debian/rules`, so it needed no
+change. All local HEVC patches re-applied with zero fuzz and no
+build-script changes.
 
 The 154 rebase changed `build/cli.sh` so that configure copies upstream's
 `gn` bootstrap prerequisites and `gn gen` line from `debian/rules` (154
 builds `./out/Release/gn` instead of using a system `gn`); that still
-holds for 155.
+holds for 156.
 
 The five 1080p HEVC fixture checks on Pi 5 (8-bit, 10-bit, HDR-coded, and
 weighted-prediction 8-bit/10-bit) all passed on this build, both as a raw
@@ -43,7 +46,7 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-155.0.8059.79-1-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
+| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-156.0.8078.73-1-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
 | Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component introduced by the 151.x `.dsc` and still present in 152.x (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
@@ -139,7 +142,7 @@ re-base our patches onto it:
 
    ```bash
    gh auth token | ssh <vm> 'read -r GH_TOKEN; export GH_TOKEN; cd ~/chromium-rpi-hevc &&
-     scripts/vendor-upstream-source.sh --publish --write-pins 155.0.8059.79-1~deb13u1+rpt1'
+     scripts/vendor-upstream-source.sh --publish --write-pins 156.0.8078.73-1~deb13u1+rpt1'
    ```
 
    If the `.dsc`'s component list changes, `_cmd_fetch` and the pin
