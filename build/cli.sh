@@ -595,6 +595,7 @@ _cmd_configure() {
     _step "configure: make -f debian/rules cli-chromium-rpi-hevc-configure"
     grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules \
         || _die "configure: $MARKER_CONFIGURE_TARGET not present in debian/rules (rules-tail not applied)"
+    _reset_configure_state
     make -f debian/rules cli-chromium-rpi-hevc-configure
 
     [ -f "$args_gn" ] || _die "configure ran but $args_gn missing"
@@ -812,6 +813,22 @@ _rename_for_packaging() {
     done
 }
 
+# Undo the non-idempotent system-TypeScript setup in upstream's
+# override_dh_auto_configure (156+: `mkdir lib`, `mv package.json
+# package.json.upstream`, `ln -sr ... linux-amd64/src/`), mirroring the
+# matching lines of upstream's override_dh_auto_clean. Without this, any
+# second configure on the same tree (cli.sh debs after fast, or a repeat
+# fast) dies with "mkdir: cannot create directory 'lib': File exists".
+_reset_configure_state() {
+    local ts=third_party/node/node_modules/typescript
+    if [ -e "$ts/package.json.upstream" ]; then
+        rm -f "$ts/package.json"
+        mv "$ts/package.json.upstream" "$ts/package.json"
+        rm -rf "$ts/lib" third_party/typescript/linux-amd64
+        _log "reset system-TypeScript configure state for re-run"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # debs — full dpkg-buildpackage. Behavior:
 #   - Self-contained: applies patches first (duck #2). Standalone `debs` no
@@ -852,6 +869,7 @@ _cmd_debs() {
 
     # -nc skips debian/rules build, so the packaging renames never run.
     _rename_for_packaging
+    _reset_configure_state
 
     _step "STAGE 4: dpkg-buildpackage (long; hours)"
     _log "Using $JOBS parallel jobs."

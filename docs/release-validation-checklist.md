@@ -3,8 +3,8 @@
 Status: **living document.** Update the matrix + baseline results on every
 Chromium version bump.
 Owner: agora / chromium-rpi-hevc
-Last validated build: **155.0.8059.79-1~deb13u1+rpt1** on Pi5
-(Pi100, `192.168.1.100`), 2026-10-18.
+Last validated build: **156.0.8078.73-1~deb13u1+rpt1** on Pi5
+(Pi100, `192.168.1.100`), 2026-10-30.
 
 ## Why this exists
 
