@@ -80,7 +80,7 @@ readonly SHA256_DSC="d1958ee791251a4d07d016dfdcd71208ea7c09dd585524e871a9dc7edee
 readonly MARKER_EN_US='# chromium-rpi-hevc: drop duplicate en-US.pak from chromium-l10n staging'
 readonly MARKER_CCACHE='# chromium-rpi-hevc: enable ccache as cc_wrapper (Tier 1)'
 readonly MARKER_CONFIGURE_TARGET_PREFIX='# chromium-rpi-hevc: split-out configure target'
-readonly MARKER_CONFIGURE_TARGET="$MARKER_CONFIGURE_TARGET_PREFIX so cli.sh fast can work cold (#29, v2: upstream gn recipe)"
+readonly MARKER_CONFIGURE_TARGET="$MARKER_CONFIGURE_TARGET_PREFIX so cli.sh fast can work cold (#29, v3: upstream pre-ninja recipe)"
 
 # ---------------------------------------------------------------------------
 # Globals (set by main argv parsing; not user env vars)
@@ -317,28 +317,39 @@ EOF
     # cli-* (not override_dh_*) so dpkg-buildpackage / dh do NOT call it; only
     # explicit `make -f debian/rules cli-chromium-rpi-hevc-configure` does.
     #
-    # The gn command and prerequisites are copied from upstream's own
-    # override_dh_auto_build-arch rather than hardcoded: 153 used a system
-    # `gn`, while 154 bootstraps ./out/Release/gn via an out/Release/gn
-    # target, and a hardcoded `gn` failed with "gn: not found".
+    # The prerequisites and every recipe line before the first `ninja` are
+    # copied from upstream's own override_dh_auto_build-arch rather than
+    # hardcoded: 153 used a system `gn`, while 154 bootstraps
+    # ./out/Release/gn via an out/Release/gn target, and 156.79 adds a
+    # `deb_pre_gen.py add-ninja-hooks` step after `gn gen` that swaps in
+    # pre-generated outputs (devtools node scripts, bindgen). Without that
+    # step the fast build runs those generators natively.
     if grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules; then
         :
     else
-        # Drop a configure block written by an older cli.sh (marker + 2 lines).
-        awk -v p="$MARKER_CONFIGURE_TARGET_PREFIX" \
-            'skip > 0 { skip--; next } index($0, p) == 1 { skip = 2; next } { print }' \
+        # Drop a configure block written by an older cli.sh: the marker, the
+        # target line, and its tab-indented recipe lines.
+        awk -v p="$MARKER_CONFIGURE_TARGET_PREFIX" '
+            index($0, p) == 1 { skip = 1; next }
+            skip == 1 && /^cli-chromium-rpi-hevc-configure:/ { skip = 2; next }
+            skip == 2 && /^\t/ { next }
+            { skip = 0; print }' \
             debian/rules > debian/rules.tmp && mv debian/rules.tmp debian/rules
         chmod +x debian/rules
-        local prereqs gen_line
+        local prereqs recipe
         prereqs=$(sed -n 's/^override_dh_auto_build-arch:[[:space:]]*//p' debian/rules | head -1)
-        gen_line=$(awk '/^override_dh_auto_build-arch:/ { f = 1; next }
-                        f && !/^\t/ { exit }
-                        f && / gen out\/Release / { print; exit }' debian/rules)
-        [ -n "$gen_line" ] || _die "no 'gn gen out/Release' line in upstream override_dh_auto_build-arch; update _apply_rules_tail"
+        recipe=$(awk '/^override_dh_auto_build-arch:/ { f = 1; next }
+                      f && !/^\t/ { exit }
+                      f && /^\tninja / { exit }
+                      f { print }' debian/rules)
+        printf '%s\n' "$recipe" | grep -q ' gen out/Release ' \
+            || _die "no 'gn gen out/Release' line before ninja in upstream override_dh_auto_build-arch; update _apply_rules_tail"
         printf '\n%s\n' "$MARKER_CONFIGURE_TARGET" >> debian/rules
         printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure %s\n' "$prereqs" >> debian/rules
-        printf '%s\n' "$gen_line" >> debian/rules
-        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules (prereqs: ${prereqs:-none}; recipe:${gen_line})"
+        printf '%s\n' "$recipe" >> debian/rules
+        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules (prereqs: ${prereqs:-none}; recipe:"
+        printf '%s\n' "$recipe" | while IFS= read -r l; do _log "   ${l}"; done
+        _log "  )"
     fi
 }
 
