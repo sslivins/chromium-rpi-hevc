@@ -1,28 +1,30 @@
 # Upstream source pinning
 
 This repo's build is **fully pinned** to a single Chromium upstream
-version: `1:156.0.8078.73-1~deb13u1+rpt1`. This is a major-version rebase
-(from `155.0.8059.79-1~deb13u1+rpt1`, skipping RPi's intermediate
-156.0.8078.47 release). RPi-Distro replaced two of its own patches
-(`rpi/v4l2-stateful-count-instances-once` →
-`rpi/v4l2-stateful-fix-instance-counting`, and
-`rpi/x11-import-bgrx-native-pixmap` →
-`rpi/x11-add-bgrx-native-pixmap-binding`); neither touches files our local
-patches modify, and we use the stateless decoder. Upstream `debian/rules`
-now sets up TypeScript and esbuild from system Node packages; our
-configure target derives that recipe from `debian/rules`, so it needed no
-change. All local HEVC patches re-applied with zero fuzz and no
-build-script changes.
+version: `1:156.0.8078.79-1~deb13u1+rpt1`. This is a point-release rebase
+from `156.0.8078.73-1~deb13u1+rpt1` (CVE fixes; it also carries RPi's
+`.73+rpt2` change, linking arm64 with `--fix-cortex-a53-843419`).
+RPi-Distro added two of its own patches
+(`rpi/v4l2-stateful-rearm-poll-after-pollerr`,
+`rpi/sandbox-allow-fcntl-dupfd-query`) and two `upstream/` patches; all
+local HEVC patches re-applied with zero fuzz.
 
-The 154 rebase changed `build/cli.sh` so that configure copies upstream's
-`gn` bootstrap prerequisites and `gn gen` line from `debian/rules` (154
-builds `./out/Release/gn` instead of using a system `gn`); that still
-holds for 156.
+156.0.8078.79 replaced Debian's GN-level `pre-gen.patch` with a
+`deb_pre_gen.py add-ninja-hooks` step that runs after `gn gen` in
+`override_dh_auto_build-arch` and rewrites `toolchain.ninja` to use the
+pre-generated outputs (devtools Node scripts, bindgen). `build/cli.sh`
+configure now copies every recipe line before the first `ninja` from that
+target (marker v3), not only the `gn gen` line, so the fast build gets the
+hooks too. The 154 rebase introduced copying upstream's `gn` bootstrap
+prerequisites (154 builds `./out/Release/gn` instead of using a system
+`gn`), and the 156.73 rebase added `_reset_configure_state` because
+upstream's system-TypeScript setup in `override_dh_auto_configure` is not
+idempotent; both still hold.
 
 The five 1080p HEVC fixture checks on Pi 5 (8-bit, 10-bit, HDR-coded, and
 weighted-prediction 8-bit/10-bit) all passed on this build, both as a raw
 `out/Release/chrome` binary and via the installed Debian packages on
-Pi100, with hardware V4L2 decode confirmed (`/dev/media1`, `/dev/video19`
+Pi100, with hardware V4L2 decode confirmed (`/dev/media2`, `/dev/video19`
 held open, no software-fallback log hits). This does **not** establish
 interactive GeForce NOW gameplay, 4K decoding, or HDR display output. See
 the binary release notes for packaged-artifact verification and release
@@ -46,7 +48,7 @@ locked.
 
 | Input | What it is | Where the pin lives |
 |---|---|---|
-| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-156.0.8078.73-1-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
+| Chromium source (`*.orig.tar.xz`, ~920 MiB) | Google's chromium tarball as repackaged by RPi-Distro | This repo's GitHub Release `upstream-source-156.0.8078.79-1-deb13u1-rpt1`, with SHA256 in `build/cli.sh` |
 | Chromium pre-gen source (`*.orig-pre-gen.tar.xz`, ~15 MB) | Second orig component introduced by the 151.x `.dsc` and still present in 152.x (multi-tarball Debian format 3.0 quilt); holds pre-generated files not in the main orig tarball | Same release, same SHA256 enforcement |
 | RPi debian/ overlay (`*.debian.tar.xz`, ~560 KB) | RPi-Distro's `debian/` packaging directory: `debian/rules`, ~100 packaging patches, etc. | Same release, same SHA256 enforcement |
 | Base Docker image | `debian:trixie` userland | Multi-arch manifest digest in `build/Dockerfile`'s `FROM` line |
@@ -142,7 +144,7 @@ re-base our patches onto it:
 
    ```bash
    gh auth token | ssh <vm> 'read -r GH_TOKEN; export GH_TOKEN; cd ~/chromium-rpi-hevc &&
-     scripts/vendor-upstream-source.sh --publish --write-pins 156.0.8078.73-1~deb13u1+rpt1'
+     scripts/vendor-upstream-source.sh --publish --write-pins 156.0.8078.79-1~deb13u1+rpt1'
    ```
 
    If the `.dsc`'s component list changes, `_cmd_fetch` and the pin

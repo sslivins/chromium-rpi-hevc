@@ -67,20 +67,20 @@ readonly PATCHES_DIR=/patches
 readonly STAMP_PATCH_FP="$SRC_DIR/.local-hevc-patch-fp"
 readonly STAMP_RULES_TAIL="$SRC_DIR/.local-hevc-rules-tail-applied"
 
-readonly CHROMIUM_VERSION_FULL="156.0.8078.73-1~deb13u1+rpt1"
-readonly CHROMIUM_VERSION_UPSTREAM="156.0.8078.73"
-readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-156.0.8078.73-1-deb13u1-rpt1"
-readonly SHA256_ORIG="e36b2c1ea057e9befdc93dc28e3c0194d1041752b805501bcc7e89e3e9c98ba1"
-readonly SHA256_ORIG_PREGEN="0764ead49b237c01d07db608b113e014f807c8e5f246a2619901bc1e8616e665"
-readonly SHA256_DEBIAN="ebdcd517a5e427cfb0e5d72e4b0f608b97acd572888ba251224bf89b137bf033"
-readonly SHA256_DSC="d1958ee791251a4d07d016dfdcd71208ea7c09dd585524e871a9dc7edee9a202"
+readonly CHROMIUM_VERSION_FULL="156.0.8078.79-1~deb13u1+rpt1"
+readonly CHROMIUM_VERSION_UPSTREAM="156.0.8078.79"
+readonly UPSTREAM_RELEASE_URL_DEFAULT="https://github.com/sslivins/chromium-rpi-hevc/releases/download/upstream-source-156.0.8078.79-1-deb13u1-rpt1"
+readonly SHA256_ORIG="5351bbf4e68def70819a25b3a07eafad8f97204bcd4a3e2002c1a1dd690b0e31"
+readonly SHA256_ORIG_PREGEN="81da743a5cb52784043027e6adf3578cda7667c6e98bbedc41464feb82bc96d9"
+readonly SHA256_DEBIAN="a670019a79f38e63bdb59ddba6836eba3a76808e202199d2e2fb34c231124e45"
+readonly SHA256_DSC="2c3afe47e16cfbbc0a413a1206ec107daa26b9283a7961bbec98a7946fdb4eb9"
 
 # These are deliberately marker text; we both append them to debian/rules and
 # grep for them to detect whether the rules-tail has been applied.
 readonly MARKER_EN_US='# chromium-rpi-hevc: drop duplicate en-US.pak from chromium-l10n staging'
 readonly MARKER_CCACHE='# chromium-rpi-hevc: enable ccache as cc_wrapper (Tier 1)'
 readonly MARKER_CONFIGURE_TARGET_PREFIX='# chromium-rpi-hevc: split-out configure target'
-readonly MARKER_CONFIGURE_TARGET="$MARKER_CONFIGURE_TARGET_PREFIX so cli.sh fast can work cold (#29, v2: upstream gn recipe)"
+readonly MARKER_CONFIGURE_TARGET="$MARKER_CONFIGURE_TARGET_PREFIX so cli.sh fast can work cold (#29, v3: upstream pre-ninja recipe)"
 
 # ---------------------------------------------------------------------------
 # Globals (set by main argv parsing; not user env vars)
@@ -317,28 +317,39 @@ EOF
     # cli-* (not override_dh_*) so dpkg-buildpackage / dh do NOT call it; only
     # explicit `make -f debian/rules cli-chromium-rpi-hevc-configure` does.
     #
-    # The gn command and prerequisites are copied from upstream's own
-    # override_dh_auto_build-arch rather than hardcoded: 153 used a system
-    # `gn`, while 154 bootstraps ./out/Release/gn via an out/Release/gn
-    # target, and a hardcoded `gn` failed with "gn: not found".
+    # The prerequisites and every recipe line before the first `ninja` are
+    # copied from upstream's own override_dh_auto_build-arch rather than
+    # hardcoded: 153 used a system `gn`, while 154 bootstraps
+    # ./out/Release/gn via an out/Release/gn target, and 156.79 adds a
+    # `deb_pre_gen.py add-ninja-hooks` step after `gn gen` that swaps in
+    # pre-generated outputs (devtools node scripts, bindgen). Without that
+    # step the fast build runs those generators natively.
     if grep -qF "$MARKER_CONFIGURE_TARGET" debian/rules; then
         :
     else
-        # Drop a configure block written by an older cli.sh (marker + 2 lines).
-        awk -v p="$MARKER_CONFIGURE_TARGET_PREFIX" \
-            'skip > 0 { skip--; next } index($0, p) == 1 { skip = 2; next } { print }' \
+        # Drop a configure block written by an older cli.sh: the marker, the
+        # target line, and its tab-indented recipe lines.
+        awk -v p="$MARKER_CONFIGURE_TARGET_PREFIX" '
+            index($0, p) == 1 { skip = 1; next }
+            skip == 1 && /^cli-chromium-rpi-hevc-configure:/ { skip = 2; next }
+            skip == 2 && /^\t/ { next }
+            { skip = 0; print }' \
             debian/rules > debian/rules.tmp && mv debian/rules.tmp debian/rules
         chmod +x debian/rules
-        local prereqs gen_line
+        local prereqs recipe
         prereqs=$(sed -n 's/^override_dh_auto_build-arch:[[:space:]]*//p' debian/rules | head -1)
-        gen_line=$(awk '/^override_dh_auto_build-arch:/ { f = 1; next }
-                        f && !/^\t/ { exit }
-                        f && / gen out\/Release / { print; exit }' debian/rules)
-        [ -n "$gen_line" ] || _die "no 'gn gen out/Release' line in upstream override_dh_auto_build-arch; update _apply_rules_tail"
+        recipe=$(awk '/^override_dh_auto_build-arch:/ { f = 1; next }
+                      f && !/^\t/ { exit }
+                      f && /^\tninja / { exit }
+                      f { print }' debian/rules)
+        printf '%s\n' "$recipe" | grep -q ' gen out/Release ' \
+            || _die "no 'gn gen out/Release' line before ninja in upstream override_dh_auto_build-arch; update _apply_rules_tail"
         printf '\n%s\n' "$MARKER_CONFIGURE_TARGET" >> debian/rules
         printf 'cli-chromium-rpi-hevc-configure: override_dh_auto_configure %s\n' "$prereqs" >> debian/rules
-        printf '%s\n' "$gen_line" >> debian/rules
-        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules (prereqs: ${prereqs:-none}; recipe:${gen_line})"
+        printf '%s\n' "$recipe" >> debian/rules
+        _log "  appended cli-chromium-rpi-hevc-configure target to debian/rules (prereqs: ${prereqs:-none}; recipe:"
+        printf '%s\n' "$recipe" | while IFS= read -r l; do _log "   ${l}"; done
+        _log "  )"
     fi
 }
 
